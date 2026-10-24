@@ -1,4 +1,4 @@
-# JonsRockSmithMods 0.22.0
+# JonsRockSmithMods 0.23.0
 
 Windows companion for Rocksmith 2014 Remastered: reversible song removal, whole-pack splitting, difficulty/speed settings, and explicit guitar intonation tuning.
 
@@ -21,13 +21,14 @@ If Steam uses a different library, place it inside your actual Rocksmith2014 fol
 
 Open **Setup & startup** and use **Browse** to verify this computer's Rocksmith folder, Do Not Want backup folder, and Steam profile ending in `*_PRFLDB`. Paths differ between Windows users, Steam accounts, drives and libraries. Do not copy another person's user/profile paths or edit source code to change these links. Archive/title/split/difficulty features also need a separately installed compatible Rocksmith Toolkit; details are in INSTALL.md.
 
-**Setup & startup displays the running version, EXE/Python mode, and exact running path.** The EXE's Windows file properties also show version 0.22.0. Use these to distinguish an old copy.
+**Setup & startup displays the running version, EXE/Python mode, and exact running path.** The EXE's Windows file properties also show version 0.23.0. Use these to distinguish an old copy.
 
 ## Features and limits
 
 - Check or select song archives in the companion while the game runs; queue reversible removal. After Rocksmith closes, confirmed whole archives move to Do Not Want and can be restored. Keep/reopen the companion to process work.
 - To remove individual tracks from a pack, split/replace the complete pack with verified single-song files first, then queue only the songs you want moved.
-- **Native in-game marking is optional and separate.** With a locally built compatible Jons RSMods extension, the game displays an F10 hint in menus. Let the desired song preview start in Learn a Song, then press F10; saved/error feedback appears. Review the saved mark after game exit. It identifies the preview, not an unverified currently playing arrangement. A multi-song archive affects all contained tracks.
+- **Native in-game removal is optional.** With a locally built compatible Jons RSMods extension, the F10 hint appears only while a live song preview is selected. Press F10 to mark that preview. After Rocksmith closes, the companion automatically moves a safely matched single-song archive to Do Not Want; keep the companion open or reopen it afterward. Undo last completed removal restores the file. Multi-song packs are refused and must be split first. F10 does not identify an arrangement already playing.
+- **Game pitch detection is configurable.** Choose Rocksmith's chart-authored reference or standard A440 note detection while preserving the chart's semitone tuning, including Drop D. Optional first-song skip sends the game's Delete skip key once per Rocksmith launch. A440 changes note detection only; it does not retune backing audio. These settings need the compatible native extension and a game restart.
 - The optional modified RSMods DLL is **not included in public downloads**: upstream has no stated redistribution license. Developer build/provenance instructions are in native/README.md. Manual companion selection/removal works without that extension. Upstream RSMods installation is separate.
 - Split a complete, self-contained pack into verified single-song archives. Only after verification does the original pack move to Do Not Want. Missing recordings cannot be reconstructed by splitting.
 - Read-only health checks show charts, embedded audio, missing installed dependencies and detailed reports. File size and structural checks do not prove game playback.

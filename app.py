@@ -9,7 +9,6 @@ import sys
 import threading
 import traceback
 import tkinter as tk
-from datetime import datetime, timezone
 from pathlib import Path
 from tkinter import Menu, filedialog, messagebox, simpledialog, ttk
 
@@ -36,6 +35,14 @@ from game_song_requests import (
     discard_game_song_request,
     load_pending_game_song_requests,
     resolve_active_archive_for_song_key,
+)
+from game_tuning_settings import (
+    DEFAULT_PITCH_REFERENCE,
+    DEFAULT_SKIP_FIRST_TUNER,
+    PITCH_REFERENCE_A440,
+    PITCH_REFERENCE_ROCKSMITH,
+    read_game_tuning_settings,
+    write_game_tuning_settings,
 )
 from difficulty_batch import BulkDifficultyResult, collect_global_difficulty
 from intonation_checker import IntonationCheckerWindow
@@ -73,7 +80,7 @@ from startup_config import read_startup_config, write_startup_config
 from ui_layout import ScrollablePage, initial_window_size
 
 
-APP_VERSION = "0.22.0"
+APP_VERSION = "0.23.0"
 DEFAULT_DIFFICULTY_PERCENT = 50
 DEFAULT_GAME = next((parent for parent in Path(__file__).resolve().parents if (parent / "Rocksmith2014.exe").is_file()), Path(r"C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014"))
 DEFAULT_REVIEW = Path.home() / "Documents" / "JonsRockSmithMods" / "DoNotWant"
@@ -273,6 +280,9 @@ class App(tk.Tk):
         self.speed_enabled_var = tk.BooleanVar(value=False)
         self.speed_percent_var = tk.StringVar(value=str(DEFAULT_SPEED_PERCENT))
         self.speed_status_var = tk.StringVar(value="Checking Jons RSMods extension...")
+        self.tuning_pitch_reference_var = tk.StringVar(value="")
+        self.skip_first_tuner_var = tk.BooleanVar(value=DEFAULT_SKIP_FIRST_TUNER)
+        self.tuning_status_var = tk.StringVar(value="Loading game tuning settings...")
         self.difficulty_percent_var = tk.StringVar(value=str(DEFAULT_DIFFICULTY_PERCENT))
         self.difficulty_level_var = tk.StringVar(value="5")
         self.startup_enabled_var = tk.BooleanVar(value=False)
@@ -313,7 +323,7 @@ class App(tk.Tk):
         self.game_song_request_error: str | None = None
         self.deferred_game_song_requests: set[str] = set()
         self.events: queue.Queue = queue.Queue()
-        self.busy = False
+        self._operation_busy = False
         self.tooltips: list[HoverTooltip] = []
         self.split_progress_dialog = None
         self.split_progress_status_var = None
@@ -321,6 +331,7 @@ class App(tk.Tk):
         self._build()
         self.progress.pack_forget()
         self._load_speed()
+        self._load_tuning_settings()
         self._load_profile_difficulty()
         self.after(100, self._poll)
         self.after(1200, self._check_pending_move_queue)
@@ -435,16 +446,11 @@ class App(tk.Tk):
         action(remove, "cancel_queued_moves_button", "Undo queued removals", self._cancel_queued_moves, 3)
         action(remove, "retry_queued_moves_button", "Retry queued removals", self._retry_queued_moves, 3, 1)
         action(remove, "undo_last_removal_button", "Undo last completed removal", self._undo_last_completed_removal, 4)
-        action(remove, "review_marks_button", "Review saved in-game marks", self._review_saved_game_marks, 5)
+        action(remove, "review_marks_button", "Retry saved F10 marks", self._review_saved_game_marks, 5)
         action(remove, "forget_marks_button", "Forget saved in-game marks", self._forget_saved_game_marks, 5, 1)
         self.pending_moves_status_var = tk.StringVar(value="No queued removals.")
         ttk.Label(remove, textvariable=self.pending_moves_status_var, wraplength=700).grid(
             row=6, column=0, columnspan=2, sticky="ew", pady=4)
-        ttk.Label(remove, text="In the song list, let the selected song preview start, then press F10 to save a removal mark. "
-                  "Keep browsing; review happens after Rocksmith exits. Marks survive app exit. Reopen this app "
-                  "to finish removals. A pack moves as one whole file; split it first for individual songs.",
-                  wraplength=700).grid(row=7, column=0, columnspan=2, sticky="ew")
-
         ttk.Label(remove, text=(
             "WARNING: Queueing moves each checked PSARC out of active DLC into Do Not Want after Rocksmith closes. "
             "It is not permanently deleted. A song pack moves as one archive unless you split it first. "
@@ -452,9 +458,9 @@ class App(tk.Tk):
             "only the individual songs you want moved. "
             "Undo queued removals before they run, or use Undo last completed removal afterward."
         ), foreground="#9b1c1c", wraplength=700, justify="left").grid(
-            row=8, column=0, columnspan=2, sticky="ew", pady=(8, 2)
+            row=7, column=0, columnspan=2, sticky="ew", pady=(8, 2)
         )
-        action(remove, "in_game_help_button", "In-game removal: setup and controls", self._show_in_game_removal_help, 9)
+        action(remove, "in_game_help_button", "In-game removal: setup and controls", self._show_in_game_removal_help, 8)
 
         action(packs, "split_pack_button", "Split up whole song pack", self._split_pack_selected, 0)
         practice_button = ttk.Button(packs, text="Edit difficulty / speed for selected pack songs", command=self._edit_song_practice)
@@ -543,6 +549,46 @@ class App(tk.Tk):
         self.open_songs_folder_button = ttk.Button(paths, text="Open Do Not Want songs folder", command=self._open_do_not_want_folder)
         self.open_songs_folder_button.grid(row=7, column=0, sticky="w")
         self.operation_buttons.append(self.open_songs_folder_button)
+        tuning = ttk.LabelFrame(setup, text="Game pitch detection and first song", padding=10)
+        tuning.pack(fill="x", pady=(0, 12))
+        ttk.Label(tuning, text="Note-detection pitch reference").grid(row=0, column=0, sticky="w")
+        pitch_choices = (
+            "A440 standard (keep chart tuning such as Drop D)",
+            "Rocksmith chart-authored pitch reference",
+        )
+        self.tuning_pitch_choice_to_value = {
+            pitch_choices[0]: PITCH_REFERENCE_A440,
+            pitch_choices[1]: PITCH_REFERENCE_ROCKSMITH,
+        }
+        self.tuning_pitch_value_to_choice = {value: label for label, value in self.tuning_pitch_choice_to_value.items()}
+        self.tuning_pitch_reference_var.set(self.tuning_pitch_value_to_choice[DEFAULT_PITCH_REFERENCE])
+        pitch_selector = ttk.Combobox(
+            tuning, textvariable=self.tuning_pitch_reference_var,
+            values=pitch_choices, state="readonly", width=54,
+        )
+        pitch_selector.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        tuning.columnconfigure(0, weight=1)
+        ttk.Checkbutton(
+            tuning,
+            text="Skip the first pre-song tuner after each Rocksmith launch",
+            variable=self.skip_first_tuner_var,
+        ).grid(row=2, column=0, sticky="w", pady=3)
+        save_tuning = ttk.Button(tuning, text="Save game tuning settings", command=self._save_tuning_settings)
+        save_tuning.grid(row=3, column=0, sticky="w", pady=(5, 3))
+        self.operation_buttons.append(save_tuning)
+        ttk.Label(tuning, textvariable=self.tuning_status_var, wraplength=700).grid(
+            row=4, column=0, sticky="ew", pady=4
+        )
+        ttk.Label(
+            tuning,
+            text=(
+                "A440 changes Rocksmith's note-detection reference while keeping the chart's semitone tuning; "
+                "it does not retune the backing audio. If a recording is intentionally detuned, it may sound "
+                "out of tune against A440. The skip applies once per game launch; later songs still show their tuner. "
+                "Requires the compatible Jons RSMods extension. Close Rocksmith to save, then restart it."
+            ),
+            wraplength=700,
+        ).grid(row=5, column=0, sticky="ew", pady=(3, 0))
         extension = ttk.LabelFrame(setup, text="RSMods integration", padding=10)
         extension.pack(fill="x", pady=(0, 12))
         ttk.Label(extension, textvariable=self.speed_status_var, wraplength=700).pack(anchor="w")
@@ -588,6 +634,7 @@ class App(tk.Tk):
         if selected:
             self.game_var.set(selected)
             self._load_speed()
+            self._load_tuning_settings()
             self.refresh()
 
     def _browse_review(self) -> None:
@@ -663,6 +710,44 @@ class App(tk.Tk):
             )
         except (OSError, ValueError, StoreError) as exc:
             self.startup_status_var.set(f"Startup preference unavailable: {exc}")
+
+    def _load_tuning_settings(self) -> None:
+        game = Path(self.game_var.get())
+        try:
+            pitch_reference, skip_first_tuner = read_game_tuning_settings(
+                game / "JonsRockSmithMods.ini"
+            )
+            self.tuning_pitch_reference_var.set(
+                self.tuning_pitch_value_to_choice[pitch_reference]
+            )
+            self.skip_first_tuner_var.set(skip_first_tuner)
+            pitch_name = "A440 standard" if pitch_reference == PITCH_REFERENCE_A440 else "Rocksmith-authored"
+            skip_name = "on" if skip_first_tuner else "off"
+            self.tuning_status_var.set(
+                f"Loaded: {pitch_name} note reference; first-song tuner skip {skip_name}. "
+                "Requires the compatible Jons extension and a game restart to apply."
+            )
+        except (OSError, ValueError, StoreError, KeyError) as exc:
+            logging.exception("Cannot load game tuning settings")
+            self.tuning_status_var.set(f"Game tuning settings unavailable: {exc}")
+
+    def _save_tuning_settings(self) -> None:
+        choice = self.tuning_pitch_reference_var.get()
+        pitch_reference = self.tuning_pitch_choice_to_value.get(choice)
+        if pitch_reference is None:
+            messagebox.showwarning(
+                "Game tuning settings", "Choose a note-detection pitch reference before saving."
+            )
+            return
+        game = Path(self.game_var.get())
+        self._run(
+            "Saving game tuning settings",
+            lambda: write_game_tuning_settings(
+                game / "JonsRockSmithMods.ini",
+                pitch_reference,
+                self.skip_first_tuner_var.get(),
+            ),
+        )
 
     def _save_startup(self) -> None:
         enabled, profile_name = self.startup_enabled_var.get(), self.startup_profile_var.get().strip()
@@ -836,7 +921,7 @@ class App(tk.Tk):
         ttk.Button(dialog, text="Close", command=dialog.destroy).grid(row=2, column=0, sticky="e", padx=10, pady=10)
 
     def _edit_song_practice(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         rows = [self.visible_rows[item] for item in self.tree.selection() if item in self.visible_rows]
         if not rows:
@@ -1054,19 +1139,19 @@ class App(tk.Tk):
     def _update_action_states(self) -> None:
         if not hasattr(self, "action_buttons"):
             return
-        state = "disabled" if self.busy else "normal"
+        state = "disabled" if self._operation_busy else "normal"
         for button in self.action_buttons:
             button.configure(state=state)
-        if self.busy:
+        if self._operation_busy:
             return
         self.clear_checks_button.configure(state="normal")
         self.move_checked_button.configure(state="normal" if self._checked_active() else "disabled")
         self.queue_checked_button.configure(state="normal" if self._checked_active() else "disabled")
         self.cancel_queued_moves_button.configure(
-            state="normal" if self.pending_move_count and not self.busy else "disabled"
+            state="normal" if self.pending_move_count and not self._operation_busy else "disabled"
         )
         self.retry_queued_moves_button.configure(
-            state="normal" if self.pending_move_count and self.pending_move_retry_paused and not self.busy else "disabled"
+            state="normal" if self.pending_move_count and self.pending_move_retry_paused and not self._operation_busy else "disabled"
         )
         self.move_nonfavorites_button.configure(
             state="normal" if self._favorites_move_is_safe() else "disabled"
@@ -1172,7 +1257,7 @@ class App(tk.Tk):
         return "break"
 
     def _show_row_context_menu(self, event) -> str | None:
-        if self.busy:
+        if self._operation_busy:
             return "break"
         item = self.tree.identify_row(event.y)
         row = self.visible_rows.get(item)
@@ -1252,7 +1337,7 @@ class App(tk.Tk):
         return "break"
 
     def _open_archive_details_event(self, event):
-        if self.busy:
+        if self._operation_busy:
             return "break"
         item = self.tree.identify_row(event.y)
         row = self.visible_rows.get(item)
@@ -1263,7 +1348,7 @@ class App(tk.Tk):
         return None
 
     def _split_pack_selected(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         selected = [
             self.visible_rows[item]
@@ -1427,7 +1512,7 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Close", command=detail.destroy).pack(side="right")
 
     def _open_pack_split_dialog(self, owner, row: SongFile, metadata: dict) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         try:
             songs = validate_split_metadata(metadata)
@@ -1601,7 +1686,7 @@ class App(tk.Tk):
         ttk.Button(footer, text="Clear selection", command=clear_selection).pack(side="left", padx=6)
 
         def start_split() -> None:
-            if self.busy:
+            if self._operation_busy:
                 return
             selected = tuple(sorted(selected_indices))
             try:
@@ -1776,9 +1861,9 @@ class App(tk.Tk):
         self._update_action_states()
 
     def _run(self, description: str, worker) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
-        self.busy = True
+        self._operation_busy = True
         self.status_var.set(description)
         self.progress.pack(fill="x", padx=12)
         self.progress.start(12)
@@ -1823,10 +1908,10 @@ class App(tk.Tk):
         messagebox.showinfo(
             "In-game removal: F10 in the song list",
             "1. Install the compatible Jons native extension while Rocksmith is closed, then restart Rocksmith.\n"
-            "2. In Learn a Song, enable previews and wait for the selected song preview to start.\n"
-            "3. Press the configured mark key (default F10). The new extension displays saved/error feedback in-game.\n"
-            "4. After Rocksmith exits, open this app, review the saved selection, and confirm QUEUE. The entire archive moves reversibly to Do Not Want.\n\n"
-            "A pack affects every contained track. Split a complete pack first for individual removal. This does not erase files during performance. Current-song identity during performance is not verified: return to the song list to mark it.\n\n"
+            "2. In Learn a Song, wait for the selected song preview. F10 hint appears only while a live preview is selected.\n"
+            "3. Press the configured mark key (default F10). After Rocksmith closes, this app automatically moves a verified single-song archive to Do Not Want. Keep this app open, or reopen it after the game exits.\n"
+            "4. Use Undo last completed removal to restore a moved archive. A multi-song pack is never moved from one F10 mark; split it into single-song files first, then retry the saved mark.\n\n"
+            "No archive moves while Rocksmith runs. F10 identifies the current preview, not an arrangement already playing. If the mark cannot be matched safely, it stays saved and the app explains how to retry.\n\n"
             "Public downloads do not bundle the optional modified RSMods DLL because upstream does not state a redistribution license. The local build instructions are in native/README.md in the developer repository. Python and EXE app workflows both work without that optional extension for manual song selection.\n\n"
             f"Native status: {status}\nRunning app: {APP_VERSION}", parent=self,
         )
@@ -1836,7 +1921,7 @@ class App(tk.Tk):
         if window is not None and window.winfo_exists():
             window.lift()
             return
-        if self.busy:
+        if self._operation_busy:
             return
         rows = [row for row in self.rows if row.location == "Active"]
         if not rows:
@@ -1851,7 +1936,7 @@ class App(tk.Tk):
             messagebox.showerror("Song health", f"{exc}\n\nDetails: {LOG_PATH}", parent=self)
 
     def _queue_health_rows(self, rows) -> None:
-        if self.busy:
+        if self._operation_busy:
             raise StoreError("Another operation is running. Wait, then queue again.")
         store = self._store()
         candidates = [row for row in rows if row.location == "Active"]
@@ -1866,7 +1951,7 @@ class App(tk.Tk):
         self._run("Queueing selected archives", lambda: queue_song_moves(PENDING_MOVE_QUEUE_PATH, store, candidates))
 
     def _forget_saved_game_marks(self) -> None:
-        if self.busy or self.active_game_song_request is not None:
+        if self._operation_busy or self.active_game_song_request is not None:
             return
         try:
             batch = load_pending_game_song_requests()
@@ -1896,7 +1981,7 @@ class App(tk.Tk):
 
     def _check_in_game_song_requests(self, *, schedule: bool = True) -> None:
         try:
-            if self.busy or self.active_game_song_request is not None:
+            if self._operation_busy or self.active_game_song_request is not None:
                 return
             batch = load_pending_game_song_requests()
             if batch.expired_count:
@@ -1908,13 +1993,13 @@ class App(tk.Tk):
                 logging.warning("Discarded %s malformed in-game song request(s)", batch.invalid_count)
             if batch.requests and game_is_running():
                 self.pending_moves_status_var.set(
-                    f"{len(batch.requests)} in-game mark(s) saved. Keep playing; review after Rocksmith exits."
+                    f"{len(batch.requests)} F10 mark(s) saved. Keep playing; verified single-song archives move after Rocksmith exits."
                 )
                 return
             eligible = [request for request in batch.requests
                         if request.request_id not in self.deferred_game_song_requests]
             if eligible and not self.rows:
-                self.pending_moves_status_var.set("In-game marks saved. Run Full refresh before reviewing them.")
+                self.pending_moves_status_var.set("F10 marks saved. Run Full refresh to identify their archives; no files moved.")
                 return
             if eligible:
                 request = eligible[0]
@@ -1923,7 +2008,8 @@ class App(tk.Tk):
                 self._run(
                     "Resolving in-game song selection",
                     lambda: resolve_active_archive_for_song_key(
-                        rows_snapshot, request.song_key, self.metadata.get
+                        rows_snapshot, request.song_key, self.metadata.get,
+                        require_single_song_archive=True,
                     ),
                 )
         except StoreError as exc:
@@ -1950,35 +2036,20 @@ class App(tk.Tk):
         if show_warning:
             messagebox.showwarning("In-game song removal", message, parent=self)
 
-    def _confirm_in_game_song_archive(self, row: SongFile) -> None:
+    def _queue_in_game_song_archive(self, row: SongFile) -> None:
         request = self.active_game_song_request
         if request is None:
             return
+        if game_is_running():
+            self._finish_in_game_song_request(
+                "Rocksmith started again before removal. No archive moved; close the game and retry the saved F10 mark."
+            )
+            return
         try:
             store = self._store()
-            captured_at = datetime.fromtimestamp(
-                request.captured_at_unix_ms / 1000, timezone.utc
-            ).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-            confirmed = self._confirm_archive_moves(
-                "Confirm in-game song removal",
-                [row],
-                store.songs_root,
-                context=(
-                    f"Rocksmith preview SongKey: {request.song_key}; captured {captured_at}. "
-                    "This removes the complete archive, including every track listed below, from the game "
-                    "after Rocksmith closes. Cancel if this is not the song you selected."
-                ),
-                queue_after_close=True,
-                show_all_tracks=True,
-            )
         except StoreError as exc:
             self._finish_in_game_song_request(
                 f"In-game song removal refused: {exc}. No archive was queued.", show_warning=True
-            )
-            return
-        if not confirmed:
-            self._finish_in_game_song_request(
-                "Review postponed; no archive was queued."
             )
             return
         self._run(
@@ -1988,7 +2059,7 @@ class App(tk.Tk):
 
     def _process_pending_move_queue(self) -> None:
         if (
-            self.busy or self.active_game_song_request is not None
+            self._operation_busy or self.active_game_song_request is not None
             or self.pending_move_retry_paused or not self.pending_move_count
         ):
             return
@@ -2053,7 +2124,7 @@ class App(tk.Tk):
         self._process_pending_move_queue()
 
     def _undo_last_completed_removal(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         try:
             items = load_last_completed_moves(LAST_COMPLETED_MOVE_PATH)
@@ -2124,7 +2195,7 @@ class App(tk.Tk):
                             self.pending_moves_status_var.set(
                                 f"{count} archive(s) queued. Confirm or cancel in-game selection first."
                             )
-                        elif self.busy:
+                        elif self._operation_busy:
                             self.pending_moves_status_var.set(
                                 f"Rocksmith is closed. {count} queued archive(s) will move after the current app task."
                             )
@@ -2146,7 +2217,7 @@ class App(tk.Tk):
                     except StoreError as exc:
                         logging.error("Invalid worker result for %s: %s", description, exc)
                         kind, result = "error", str(exc)
-                self.busy = False
+                self._operation_busy = False
                 self.progress.stop()
                 self.progress.pack_forget()
                 for button in self.path_controls + self.toolbar_buttons + self.operation_buttons:
@@ -2159,7 +2230,7 @@ class App(tk.Tk):
                     if description == "Resolving in-game song selection":
                         self._finish_in_game_song_request(
                             f"No safe archive match: {result}. No archive was queued. "
-                            "Run Full refresh / Read titles, then review the saved mark again.",
+                            "Run Full refresh / Read titles, fix the issue shown, then retry the saved F10 mark.",
                             show_warning=True,
                         )
                         self._update_action_states()
@@ -2186,6 +2257,8 @@ class App(tk.Tk):
                         self.difficulty_status_var.set(overall)
                     if description in ("Updating song favorites", "Unfavoriting all songs"):
                         self.favorite_write_status_var.set(f"Favorite update failed: {result}")
+                    if description == "Saving game tuning settings":
+                        self.tuning_status_var.set(f"Save failed: {result}")
                     if description == "Saving difficulty setting":
                         self._show_difficulty_report()
                     elif description not in ("Scanning songs", "Full library refresh"):
@@ -2275,6 +2348,13 @@ class App(tk.Tk):
                 elif description == "Saving speed setting":
                     self.speed_status_var.set(support_status(Path(self.game_var.get())))
                     self.status_var.set("Speed setting saved. Restart Rocksmith to apply it.")
+                elif description == "Saving game tuning settings":
+                    self._load_tuning_settings()
+                    backup = f" Verified backup: {result}" if result is not None else ""
+                    self.tuning_status_var.set(
+                        f"Game tuning settings saved. Restart Rocksmith to apply them.{backup}"
+                    )
+                    self.status_var.set("Game tuning settings saved. Restart Rocksmith to apply them.")
                 elif description == "Installing speed support":
                     self.speed_status_var.set(support_status(Path(self.game_var.get())))
                     self.status_var.set(
@@ -2326,7 +2406,7 @@ class App(tk.Tk):
                         "Selected archives queued. Rocksmith stays untouched until its process closes."
                     )
                 elif description == "Resolving in-game song selection":
-                    self._confirm_in_game_song_archive(result)
+                    self._queue_in_game_song_archive(result)
                 elif description == "Queueing in-game selected archive":
                     request = self.active_game_song_request
                     if request is not None:
@@ -2339,10 +2419,10 @@ class App(tk.Tk):
                     self.pending_move_count = result
                     self.pending_move_retry_paused = False
                     self.pending_moves_status_var.set(
-                        "In-game selection queued. Complete PSARC moves reversibly after Rocksmith closes."
+                        "F10 mark matched. Single-song archive queued for automatic reversible move to Do Not Want."
                     )
                     self.status_var.set(
-                        "In-game song archive queued. Rocksmith is unchanged until its process closes."
+                        "F10 removal queued. Undo last completed removal restores the song."
                     )
                 elif description == "Processing queued song removals":
                     if not isinstance(result, PendingMoveResult):
@@ -2541,7 +2621,7 @@ class App(tk.Tk):
     ) -> None:
         """Change selected archive tracks in the selected, freshly scanned profile."""
 
-        if self.busy:
+        if self._operation_busy:
             return
         selected = list(rows) if rows is not None else [
             self.visible_rows[item]
@@ -2649,7 +2729,7 @@ class App(tk.Tk):
     def _unfavorite_all(self) -> None:
         """Clear every favorite key in the verified selected profile."""
 
-        if self.busy:
+        if self._operation_busy:
             return
         favorite_result = self.favorite_result
         expected_profile_signature = self.favorite_profile_signature
@@ -3007,7 +3087,7 @@ class App(tk.Tk):
         self._run("Moving selected songs to Do Not Want", worker)
 
     def _preview_selected(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         selected = [self.visible_rows[item] for item in self.tree.selection() if item in self.visible_rows]
         if len(selected) != 1:
@@ -3016,7 +3096,7 @@ class App(tk.Tk):
         self._preview_row(selected[0])
 
     def _preview_row(self, row: SongFile) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         if self.preview_active:
             self._stop_preview()
@@ -3062,7 +3142,7 @@ class App(tk.Tk):
         self._update_action_states()
 
     def _open_intonation_checker(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         if self.intonation_window is not None:
             try:
@@ -3086,7 +3166,7 @@ class App(tk.Tk):
             )
 
     def _close_app(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             messagebox.showinfo("JonsRockSmithMods", "Wait for the current task to finish before closing the app.")
             return
         self._stop_preview()
@@ -3095,7 +3175,7 @@ class App(tk.Tk):
         self.destroy()
 
     def refresh(self) -> None:
-        if self.busy:
+        if self._operation_busy:
             return
         try:
             review_root = self._normalized_review_root()

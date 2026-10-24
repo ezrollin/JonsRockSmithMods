@@ -60,7 +60,7 @@ class TunerPreferenceTests(unittest.TestCase):
 
     def test_tuner_can_open_with_rocksmith_running_without_a_game_closed_gate(self):
         from app import App
-        app=SimpleNamespace(busy=False,intonation_window=None)
+        app=SimpleNamespace(_operation_busy=False,intonation_window=None)
         with patch('app.game_is_running',return_value=True) as game_check,patch('app.IntonationCheckerWindow') as create:
             App._open_intonation_checker(app)
         create.assert_called_once_with(app)

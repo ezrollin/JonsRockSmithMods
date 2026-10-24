@@ -310,7 +310,7 @@ class FavoriteButtonWorkflowTests(unittest.TestCase):
         }
 
         app = App.__new__(App)
-        app.busy = False
+        app._operation_busy = False
         app.game_var = self.Variable(str(game))
         app.review_var = self.Variable(str(root / "DoNotWant"))
         app.profile_var = self.Variable(str(profile))

@@ -4,9 +4,15 @@ This patch targets upstream RSMods commit `1e4a67d43dfd0bae2b613edc4cd67b922332d
 
 ## Visible in-game song marks
 
-The local extension adds a default-on menu hint and ten-second saved/error feedback, independent of the accuracy overlay. In Learn a Song, enable previews, wait for the desired preview, then press F10. Its exact SongKey is saved as a durable request. The extension checks a fresh preview identity and unchanged menu before publication. During performance it instructs the user to return to the song list; a current-performance SongKey has not been verified. It never changes archives inside the game.
+The local extension adds a default-on hint while a fresh song preview is active and ten-second saved/error feedback. In Learn a Song, wait for the desired preview, then press F10. Its exact SongKey is saved as a durable request. The extension checks the preview-eligible menu state, a fresh preview identity, and unchanged menu before publication. It never changes archives inside the game.
 
-After Rocksmith closes, review the exact archive and every pack track in the companion; typed QUEUE confirmation persists a reversible whole-archive move. Keep/reopen the companion to process it. Missing/ambiguous metadata never guesses an archive. Multi-song removal requires whole-pack scope or prior complete splitting.
+After Rocksmith closes, the companion automatically queues a verified single-song archive for a reversible move to Do Not Want. Keep/reopen the companion to process it; Undo last completed removal restores it. Missing/ambiguous metadata never guesses an archive. Multi-song archives are refused; split the pack first. F10 is not a permanent delete.
+
+## Note detection and first tuner
+
+The companion stores `JonsPitchReference = a440` or `rocksmith` under `[Mod Settings]`, and `JonsSkipFirstPreSongTuner = on/off` under `[Toggle Switches]`. Defaults are A440 and one skip per game launch. A440 changes the cents reference used for note detection while retaining chart semitone notes (including Drop D); it does not pitch-shift backing audio. The optional skip sends the game's Delete/skip key only at the first song-specific pre-song tuner in the process. A fresh game process resets the one-time guard.
+
+The A440 hook reuses RSMods' `TrueTuning` hook and runs only when the executable checksum matches one of the two known RSMods versions. Unknown checksums leave chart-authored pitch enabled and log `A440_REFERENCE_UNAVAILABLE`; no legacy offset is guessed. A successful source build does not prove live note recognition or the game's skip response. Verify the UI setting and one song manually after restarting Rocksmith.
 
 Settings in JonsRockSmithMods.ini beside Rocksmith2014.exe:
 

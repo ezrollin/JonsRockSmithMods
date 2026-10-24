@@ -9,13 +9,14 @@ class SavedMarkWorkflowTests(unittest.TestCase):
     def make_app(self):
         request = SimpleNamespace(request_id="saved-1", song_key="SongOne")
         app = SimpleNamespace(
-            busy=False, active_game_song_request=None,
+            _operation_busy=False, active_game_song_request=None,
             deferred_game_song_requests=set(), rows=[object()],
             metadata=SimpleNamespace(get=Mock()),
             pending_moves_status_var=SimpleNamespace(set=Mock()),
             game_song_request_error=None, after=Mock(), _run=Mock(),
             _check_in_game_song_requests=Mock(),
         )
+        app._finish_in_game_song_request = lambda message: App._finish_in_game_song_request(app, message)
         return app, request
 
     def test_mark_does_not_interrupt_game_or_resolve_archive(self):
@@ -50,17 +51,30 @@ class SavedMarkWorkflowTests(unittest.TestCase):
             App._check_in_game_song_requests(app, schedule=False)
         app._run.assert_not_called()
 
-    def test_confirm_does_not_acknowledge_before_queue_worker_succeeds(self):
+    def test_saved_single_song_mark_queues_without_second_confirmation(self):
         app, request = self.make_app()
         request.captured_at_unix_ms = 1800000000000
         app.active_game_song_request = request
         app._store = Mock(return_value=SimpleNamespace(songs_root="songs"))
-        app._confirm_archive_moves = Mock(return_value=True)
+        app._confirm_archive_moves = Mock()
         with patch("app.discard_game_song_request") as discard:
-            App._confirm_in_game_song_archive(app, object())
+            with patch("app.game_is_running", return_value=False):
+                App._queue_in_game_song_archive(app, object())
         discard.assert_not_called()
         self.assertIs(request, app.active_game_song_request)
         self.assertEqual("Queueing in-game selected archive", app._run.call_args.args[0])
+        app._confirm_archive_moves.assert_not_called()
+
+    def test_saved_single_song_mark_waits_if_game_reopened(self):
+        app, request = self.make_app()
+        app.active_game_song_request = request
+        app._store = Mock()
+        with patch("app.game_is_running", return_value=True):
+            App._queue_in_game_song_archive(app, object())
+        app._store.assert_not_called()
+        app._run.assert_not_called()
+        self.assertIsNone(app.active_game_song_request)
+        self.assertIn("started again", app.pending_moves_status_var.set.call_args.args[0])
 
 
 if __name__ == "__main__":

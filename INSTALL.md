@@ -22,7 +22,7 @@ The executable or app.py must be directly inside that JonsRockSmithMods folder, 
 - Python: `Setup Python.bat` once, then `Run Python.bat`.
 - `Launch JonsRockSmithMods.bat` offers both choices explicitly.
 
-On Setup & startup, confirm running version **0.22.0**, mode and path. File Properties > Details also shows EXE version 0.22.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
+On Setup & startup, confirm running version **0.23.0**, mode and path. File Properties > Details also shows EXE version 0.23.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
 
 ## 4. Check file links before use
 
@@ -41,11 +41,15 @@ Manual workflow needs no native add-on: select/check archives in the companion, 
 
 To remove a track from a multi-song pack, use **Split up whole song pack** and replace the complete pack with verified single-song files. Then check only individual song archives you want moved to Do Not Want and queue them. The complete pack must be split so unselected tracks are not lost.
 
-In-game F10 requires the optional compatible Jons native extension, installed while Rocksmith is closed and loaded after restart. Its new overlay shows the configured key in menus and saved/error feedback. In Learn a Song, enable previews, wait for the desired preview and press F10. Return to the song list to mark a song; performance identity is not verified. A whole pack moves as a unit. After game exit review the exact archive and type QUEUE. These are marks for review, not immediate deletion.
+In-game F10 requires the optional compatible Jons native extension, installed while Rocksmith is closed and loaded after restart. Its hint appears while a fresh song preview is selected; press F10 to mark that preview. Keep the companion open or reopen it after Rocksmith exits. It automatically moves a verified single-song archive to Do Not Want and saves an undo record. It refuses a multi-song pack so one track mark cannot move unrelated tracks; split the pack into individual archives first, then retry the saved F10 mark. No archive moves while Rocksmith is running. F10 does not identify an arrangement already playing.
+
+## Game pitch detection and first-song tuner
+
+On **Setup & startup**, choose **A440 standard** to make note detection use the equal-tempered concert-pitch reference while preserving each chart's note names and semitone tuning, such as Drop D. Choose **Rocksmith chart-authored pitch reference** to keep the original cents target. The optional **Skip the first pre-song tuner** setting sends the game's Delete/skip command only on the first song-specific pre-song tuner after each launch; later songs still show the tuner. These native settings are saved in `JonsRockSmithMods.ini`, with a verified timestamped backup. Close Rocksmith before saving, then restart it.
+
+A440 changes the note target only. It does not pitch-shift backing audio. A chart with an intentionally detuned recording can therefore sound out of tune when its detection target is normalized. The A440 hook runs only on the two supported Rocksmith executable checksums in the native source; an unrecognized build leaves the authored reference active and logs the reason. The public download excludes the native DLL, so the settings require a compatible locally built Jons extension.
 
 The modified upstream native DLL is intentionally omitted from public downloads because no upstream redistribution license was found. Developer source/patch build instructions are in native/README.md in the repository. Do not download unknown replacement DLLs or overwrite an incompatible version. No public download silently installs a native module.
-
-In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice open pitch). E Standard low E2 is 82.41/164.81 Hz; A2 is 110.00/220.00 Hz. Personal cents offsets can change the live open target. The live meter marks red for farther out, amber for near, and green within the in-tune range.
 
 In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice open pitch). Personal cents offsets can change the live open target. The live meter marks red for farther out, amber for near, and green within the in-tune range.
 

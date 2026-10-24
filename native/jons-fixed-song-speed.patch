@@ -1,5 +1,5 @@
 diff --git a/DLL/D3DOverlay.cpp b/DLL/D3DOverlay.cpp
-index f13894e..4f97c66 100644
+index f13894e..4652257 100644
 --- a/DLL/D3DOverlay.cpp
 +++ b/DLL/D3DOverlay.cpp
 @@ -1,5 +1,6 @@
@@ -34,7 +34,7 @@ index f13894e..4f97c66 100644
  	}
  }
  
-@@ -342,6 +361,49 @@ void GameOverlay::OnResetDevice() {
+@@ -342,6 +361,50 @@ void GameOverlay::OnResetDevice() {
  	fontCache.OnResetDevice();
  }
  
@@ -64,11 +64,12 @@ index f13894e..4f97c66 100644
 +        }
 +    }
 +    if (message.empty()) {
-+        if (GameState::IsInSong() || !Settings::IsOn(Setting::ShowSongRemovalHint)) return;
++		if (!Settings::IsOn(Setting::ShowSongRemovalHint)
++			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)) return;
 +        std::string key = Settings::ReturnSettingValue(Setting::Key::SongRemovalRequest);
 +        if (key.rfind("VK_", 0) == 0) key.erase(0, 3);
-+        message = "Jons: " + key + " - mark previewed song for removal review";
-+        message += "\nSong list only; enable song previews and select the song. Review after Rocksmith closes.";
++		message = "Jons: " + key + " marks this preview for removal after Rocksmith closes.";
++		message += "\nOne-song archive only; undo in the companion app. Packs are refused.";
 +    }
 +    const int fontHeight = static_cast<int>(std::max(14u, std::min(24u, WindowSize.height / 40u)));
 +    const int x = WindowSize.width / 30;
@@ -84,7 +85,7 @@ index f13894e..4f97c66 100644
  void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
  	// Draw text on screen
  	// NOTE: NEVER USE SET VALUES. Always do division of WindowSize width AND heigh so every resolution should have the text in around the same spot.
-@@ -357,7 +419,8 @@ void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
+@@ -357,7 +420,8 @@ void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
  		DisplayCurrentNote();
  		DisplayCurrentTuningForAutoTune();
  		DisplaySongAccuracy();
@@ -267,7 +268,7 @@ index 77e546a..3cd575c 100644
 \ No newline at end of file
 +}
 diff --git a/DLL/GameState.hpp b/DLL/GameState.hpp
-index 68363ea..ea84fb4 100644
+index 68363ea..891de42 100644
 --- a/DLL/GameState.hpp
 +++ b/DLL/GameState.hpp
 @@ -28,6 +28,7 @@ namespace GameState {
@@ -278,11 +279,19 @@ index 68363ea..ea84fb4 100644
  
  	inline std::string lastSongKey = "";
  
+@@ -38,6 +39,7 @@ namespace GameState {
+ 	inline static bool canGetRealMenu = false;
+ 
+ 	inline std::string previousMenu, currentMenu; // What is the last menu, and the current menu?
++	inline std::atomic_bool songRemovalPreviewActive = false;
+ 	inline std::atomic_bool GameLoaded = false; // Has the game gotten to the main menu where you can pick the gamemodes?
+ 	inline bool LessonMode = false; // Is the user in LessonMode?
+ 
 diff --git a/DLL/Keybindings.cpp b/DLL/Keybindings.cpp
-index 46cf50a..135119a 100644
+index 46cf50a..9b98efb 100644
 --- a/DLL/Keybindings.cpp
 +++ b/DLL/Keybindings.cpp
-@@ -1,7 +1,121 @@
+@@ -1,7 +1,124 @@
  #include "stdafx.h"
  #include "Keybindings.hpp"
 +#include "D3DOverlay.hpp"
@@ -332,7 +341,7 @@ index 46cf50a..135119a 100644
 +        const auto requestPath = directory / (L"request-" + wideRequestId + L".json");
 +        if (std::filesystem::exists(requestPath, directoryError)) {
 +            LOG_INFO("[JonsRockSmithMods] Song already marked for later review: " << songKey << std::endl);
-+            GameOverlay::SetSongRemovalStatus("Already saved: " + songKey + "\nReview saved marks in the companion after Rocksmith closes. Packs affect all tracks.");
++			GameOverlay::SetSongRemovalStatus("Already marked: " + songKey + "\nThe companion moves one verified song file after Rocksmith exits. Packs are refused.");
 +            return !directoryError;
 +        }
 +        size_t requestCount = 0;
@@ -375,14 +384,15 @@ index 46cf50a..135119a 100644
 +			return false;
 +		}
 +		LOG_INFO("[JonsRockSmithMods] Song marked for later reversible removal review: " << songKey << std::endl);
-+        GameOverlay::SetSongRemovalStatus("Saved removal mark: " + songKey + "\nNo song moved yet. Review in the companion after Rocksmith closes. Packs affect all tracks.");
++		GameOverlay::SetSongRemovalStatus("Marked: " + songKey + "\nThe companion moves one verified song file after Rocksmith exits. Keep or reopen the app; undo there. Packs are refused.");
 +		return true;
 +	}
 +
 +	void RequestPreviewedSongRemoval() {
-+		if (!GameState::GameLoaded || GameState::IsInSong()) {
++		if (!GameState::GameLoaded || GameState::IsInSong()
++			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)) {
 +			LOG_INFO("[JonsRockSmithMods] Song removal hotkey ignored outside song-list menus" << std::endl);
-+            GameOverlay::SetSongRemovalStatus("Return to the song list, enable song previews, select a song, then press the mark key. No song marked.", true);
++			GameOverlay::SetSongRemovalStatus("F10 works only in the song list while a fresh song preview is selected. No song marked.", true);
 +			return;
 +		}
 +        const std::string captureMenu = GameState::GetCurrentMenu();
@@ -393,7 +403,9 @@ index 46cf50a..135119a 100644
 +			return;
 +		}
 +        // Re-read the live preview immediately before capture; never use cached GetSongKey().
-+        if (GameState::IsInSong() || GameState::GetCurrentMenu() != captureMenu
++		if (GameState::IsInSong()
++			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)
++			|| GameState::GetCurrentMenu() != captureMenu
 +            || GameState::GetPreviewSongKey() != songKey) {
 +            GameOverlay::SetSongRemovalStatus("Song selection changed. Select it again and retry; no mark saved.", true);
 +            return;
@@ -404,7 +416,7 @@ index 46cf50a..135119a 100644
  	Framework::KeyEvent CaptureKeyEvent(WPARAM keyPressed, LPARAM lParam, Framework::KeyEdge edge) {
  		Framework::KeyEvent event;
  		event.virtualKey = static_cast<std::uint32_t>(keyPressed);
-@@ -30,6 +144,11 @@ namespace Keybindings {
+@@ -30,6 +147,11 @@ namespace Keybindings {
  		commands.SetKeyResolver([](std::string_view setting) {
  			return Settings::GetKeyBind(std::string(setting));
  		});
@@ -416,6 +428,165 @@ index 46cf50a..135119a 100644
  		commands.BindKey(nullptr, "ReloadSettings", 'A', Framework::KeyEdge::Up,
  			Framework::Availability::Initialized,
  			[](Framework::ModContext&, const Framework::KeyEvent&) {
+diff --git a/DLL/ModManager.cpp b/DLL/ModManager.cpp
+index 6853a17..0a083f6 100644
+--- a/DLL/ModManager.cpp
++++ b/DLL/ModManager.cpp
+@@ -2,6 +2,7 @@
+ #include <array>
+ #include "ModManager.hpp"
+ #include "Mods/Midi.hpp"
++#include "Mods/TrueTuning.hpp"
+ 
+ namespace Setting = Settings::Setting;
+ 
+@@ -69,6 +70,130 @@ namespace {
+ }
+ 
+ namespace ModManager {
++	namespace {
++		struct JonsTuningSettings {
++			bool useA440Reference = true;
++			bool skipFirstPreSongTuner = true;
++		};
++
++		JonsTuningSettings jonsTuningSettings;
++		bool jonsTuningConfigSeen = false;
++		bool jonsA440ReferenceApplied = false;
++		bool firstPreSongTunerHandled = false;
++		bool warnedUnsupportedPitchHook = false;
++		bool warnedInvalidTuningConfigPath = false;
++		std::filesystem::file_time_type jonsTuningConfigWriteTime{};
++		uintmax_t jonsTuningConfigSize = 0;
++		std::chrono::steady_clock::time_point nextJonsTuningConfigPoll{};
++
++		void RefreshJonsTuningSettings() {
++			const auto now = std::chrono::steady_clock::now();
++			if (now < nextJonsTuningConfigPoll) return;
++			nextJonsTuningConfigPoll = now + std::chrono::seconds(1);
++
++			const std::filesystem::path path("JonsRockSmithMods.ini");
++			std::error_code error;
++			const auto status = std::filesystem::symlink_status(path, error);
++			const bool pathExists = !error && status.type() != std::filesystem::file_type::not_found;
++			const bool exists = pathExists && std::filesystem::is_regular_file(status)
++				&& !std::filesystem::is_symlink(status);
++			if (error && error != std::errc::no_such_file_or_directory) {
++				if (!warnedInvalidTuningConfigPath)
++					LOG_ERROR("JonsRockSmithMods TUNING_CONFIG_REJECTED settings path cannot be checked" << std::endl);
++				warnedInvalidTuningConfigPath = true;
++				jonsTuningSettings = { false, false };
++				jonsTuningConfigSeen = false;
++				return;
++			}
++			if (pathExists && !exists) {
++				if (!warnedInvalidTuningConfigPath)
++					LOG_ERROR("JonsRockSmithMods TUNING_CONFIG_REJECTED settings path is not a regular non-linked file" << std::endl);
++				warnedInvalidTuningConfigPath = true;
++				jonsTuningSettings = { false, false };
++				jonsTuningConfigSeen = false;
++			}
++			else {
++				warnedInvalidTuningConfigPath = false;
++				if (!exists) {
++					jonsTuningSettings = { true, true };
++					jonsTuningConfigSeen = false;
++				}
++				else {
++				const auto writeTime = std::filesystem::last_write_time(path, error);
++				if (error) return;
++				const auto size = std::filesystem::file_size(path, error);
++				if (error) return;
++				if (jonsTuningConfigSeen && writeTime == jonsTuningConfigWriteTime
++					&& size == jonsTuningConfigSize) {
++					return;
++				}
++				jonsTuningConfigWriteTime = writeTime;
++				jonsTuningConfigSize = size;
++				jonsTuningConfigSeen = true;
++				if (size > 1024 * 1024) {
++					LOG_ERROR("JonsRockSmithMods TUNING_CONFIG_REJECTED settings file exceeds 1 MB" << std::endl);
++					jonsTuningSettings = { false, false };
++				}
++				else {
++					CSimpleIniA reader;
++					if (reader.LoadFile("JonsRockSmithMods.ini") < 0) {
++						LOG_ERROR("JonsRockSmithMods TUNING_CONFIG_REJECTED settings file could not be parsed" << std::endl);
++						jonsTuningSettings = { false, false };
++					}
++					else {
++						const std::string pitchReference = reader.GetValue("Mod Settings", "JonsPitchReference", "a440");
++						const std::string skipFirst = reader.GetValue("Toggle Switches", "JonsSkipFirstPreSongTuner", "on");
++						if ((pitchReference != "a440" && pitchReference != "rocksmith")
++							|| (skipFirst != "on" && skipFirst != "off")) {
++							LOG_ERROR("JonsRockSmithMods TUNING_CONFIG_REJECTED unknown pitch or tuner-skip value" << std::endl);
++							jonsTuningSettings = { false, false };
++						}
++						else {
++							jonsTuningSettings.useA440Reference = pitchReference == "a440";
++							jonsTuningSettings.skipFirstPreSongTuner = skipFirst == "on";
++						}
++					}
++				}
++				}
++			}
++
++			if (!IsSupportedRocksmithVersion()) {
++				if (jonsTuningSettings.useA440Reference && !warnedUnsupportedPitchHook) {
++					LOG_ERROR("JonsRockSmithMods A440_REFERENCE_UNAVAILABLE unsupported Rocksmith executable checksum; authored pitch remains active" << std::endl);
++					warnedUnsupportedPitchHook = true;
++				}
++				return;
++			}
++			if (jonsTuningSettings.useA440Reference != jonsA440ReferenceApplied) {
++				if (jonsTuningSettings.useA440Reference) {
++					TrueTuning::DisableTrueTuning();
++					LOG_INFO("JonsRockSmithMods A440_REFERENCE_ENABLED detection uses A440 while chart semitone tuning remains" << std::endl);
++				}
++				else {
++					TrueTuning::EnableTrueTuning();
++					LOG_INFO("JonsRockSmithMods A440_REFERENCE_DISABLED Rocksmith-authored pitch detection restored" << std::endl);
++				}
++				jonsA440ReferenceApplied = jonsTuningSettings.useA440Reference;
++			}
++		}
++
++		bool IsSongPreTunerMenu() {
++			return GameState::currentMenu.find("PreSongTuner") != std::string::npos
++				|| GameState::currentMenu.find("PreSMTuner") != std::string::npos;
++		}
++
++		void SkipFirstSongTunerIfConfigured() {
++			if (firstPreSongTunerHandled || !IsSongPreTunerMenu()) return;
++			firstPreSongTunerHandled = true;
++			if (!jonsTuningSettings.skipFirstPreSongTuner) {
++				LOG_INFO("JonsRockSmithMods FIRST_TUNER_SKIP_DISABLED first pre-song tuner left open" << std::endl);
++				return;
++			}
++			Keyboard::SendKey(VK_DELETE);
++			LOG_INFO("JonsRockSmithMods FIRST_TUNER_SKIPPED sent Rocksmith Delete/skip command once this launch" << std::endl);
++		}
++	}
++
+ 	void InitializeConfiguration() {
+ 		if (!(std::ifstream("RSMods.ini"))) {
+ 			std::ofstream RSModsFileOutput("RSMods.ini");
+@@ -177,6 +302,15 @@ namespace ModManager {
+ 	{
+ 		GameState::currentMenu = GameState::GetCurrentMenu(); // This loads without checking if memory is safe... This can cause crashes if used when GameLoaded is false.
+ 		GameState::LessonMode = GameState::Menus::IsInLessonModes();
++		RefreshJonsTuningSettings();
++		const bool eligibleSongPreview = !GameState::IsInSong()
++			&& !GameState::Menus::IsInTuningMenus()
++			&& !GameState::Menus::IsOnScoreScreens()
++			&& !GameState::Menus::IsInLessonModes()
++			&& !GameState::Menus::IsInCalibrationMenus()
++			&& !GameState::GetPreviewSongKey().empty();
++		GameState::songRemovalPreviewActive.store(eligibleSongPreview, std::memory_order_release);
++		SkipFirstSongTunerIfConfigured();
+ 
+ 		if (GameState::IsInSong())
+ 			return;
 diff --git a/DLL/Mods/AutoLoadProfileMod.cpp b/DLL/Mods/AutoLoadProfileMod.cpp
 index f1aa250..7a27980 100644
 --- a/DLL/Mods/AutoLoadProfileMod.cpp
@@ -875,3 +1046,47 @@ index f283d1e..ab153d0 100644
  #define RSMODS_BUILD_VERSION_STRING \
 -	RSMODS_VERSION_STRING "-" RSMODS_GIT_HASH
 +	RSMODS_VERSION_STRING "-" RSMODS_GIT_HASH "-JonsRockSmithMods"
+diff --git a/DLL/VersioningStruct.cpp b/DLL/VersioningStruct.cpp
+index ba1cde8..46b2c57 100644
+--- a/DLL/VersioningStruct.cpp
++++ b/DLL/VersioningStruct.cpp
+@@ -21,6 +21,11 @@ namespace {
+ 	};
+ }
+ 
++bool IsSupportedRocksmithVersion() {
++	static const bool supported = ourVersionChecksums.find(GetChecksum()) != ourVersionChecksums.end();
++	return supported;
++}
++
+ template class VersioningStruct<unsigned int>;
+ 
+ template <typename T> T& VersioningStruct<T>::Get()
+@@ -58,4 +63,4 @@ template <typename T> VersionType VersioningStruct<T>::GetVersion()
+ 
+ 	cachedVersion = true;
+ 	return version;
+-}
+\ No newline at end of file
++}
+diff --git a/DLL/VersioningStruct.h b/DLL/VersioningStruct.h
+index 821de89..4dce270 100644
+--- a/DLL/VersioningStruct.h
++++ b/DLL/VersioningStruct.h
+@@ -9,6 +9,9 @@ enum class VersionType : int
+ 	End = Count,
+ };
+ 
++// Jons hooks that patch executable instructions must only run on known checksums.
++bool IsSupportedRocksmithVersion();
++
+ template <typename T>
+ class VersioningStruct
+ {
+@@ -48,4 +51,4 @@ template <typename T> VersioningStruct<T>::VersioningStruct(const std::vector<T>
+ template <typename T> VersioningStruct<T>::operator T()
+ {
+ 	return Get();
+-}
+\ No newline at end of file
++}

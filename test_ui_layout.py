@@ -104,7 +104,7 @@ class LayoutTests(unittest.TestCase):
         app._update_action_states = mock.Mock()
         with ExitStack() as patches:
             for name in ("Frame", "LabelFrame", "Notebook", "Label", "Entry", "Button",
-                         "Checkbutton", "Spinbox", "Treeview", "Scrollbar", "Progressbar"):
+                         "Checkbutton", "Spinbox", "Combobox", "Treeview", "Scrollbar", "Progressbar"):
                 if name == "Notebook":
                     patches.enter_context(mock.patch("app.ttk.Notebook", side_effect=lambda *a, **k: mock.MagicMock()))
                 else:

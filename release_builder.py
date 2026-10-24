@@ -15,7 +15,7 @@ from pathlib import Path
 
 RUNTIME_FILES = (
     'app.py', 'archive_details.py', 'audio_preview.py', 'difficulty_batch.py',
-    'game_song_requests.py', 'ini_settings.py', 'intonation_analysis.py',
+    'game_song_requests.py', 'game_tuning_settings.py', 'ini_settings.py', 'intonation_analysis.py',
     'intonation_checker.py', 'library_health.py', 'library_health_view.py',
     'library_refresh.py', 'metadata_cache.py', 'native_install.py', 'pending_moves.py',
     'song_store.py', 'song_table.py', 'speed_config.py', 'split_pack.py',

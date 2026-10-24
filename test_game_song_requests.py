@@ -107,6 +107,38 @@ class InGameSongRequestTests(unittest.TestCase):
 
         self.assertEqual(pack, resolved)
 
+    def test_single_song_removal_refuses_multi_song_pack(self) -> None:
+        pack = self._archive("artist/pack_p.psarc")
+        metadata = {
+            "song_count": 2,
+            "songs": [
+                {"song_key": "SongOne"},
+                {"song_key": "SongTwo"},
+            ],
+            "warnings": [],
+        }
+
+        with self.assertRaisesRegex(StoreError, "2-track pack.*Split the pack"):
+            resolve_active_archive_for_song_key(
+                [pack], "SongTwo", lambda _path: metadata,
+                require_single_song_archive=True,
+            )
+
+    def test_single_song_removal_accepts_verified_single_song_archive(self) -> None:
+        song = self._archive("artist/song_p.psarc")
+        metadata = {
+            "song_count": 1,
+            "songs": [{"song_key": "SongOne"}],
+            "warnings": [],
+        }
+
+        resolved = resolve_active_archive_for_song_key(
+            [song], "SongOne", lambda _path: metadata,
+            require_single_song_archive=True,
+        )
+
+        self.assertEqual(song, resolved)
+
     def test_refuses_song_key_duplicated_across_archives(self) -> None:
         first = self._archive("artist/first.psarc")
         second = self._archive("artist/second.psarc")

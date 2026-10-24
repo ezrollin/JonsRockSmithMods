@@ -155,8 +155,14 @@ def resolve_active_archive_for_song_key(
     rows: Iterable[SongFile],
     song_key: str,
     metadata_lookup: Callable[[Path], dict | None],
+    *,
+    require_single_song_archive: bool = False,
 ) -> SongFile:
-    """Resolve a preview SongKey to one fully verified active PSARC or fail closed."""
+    """Resolve a preview SongKey to one fully verified active PSARC or fail closed.
+
+    In-game one-song removal may require a standalone archive so a mark cannot
+    move unrelated tracks from a multi-song pack.
+    """
 
     if not isinstance(song_key, str) or not _SONG_KEY.fullmatch(song_key):
         raise StoreError("Rocksmith supplied an invalid SongKey; no archive was selected")
@@ -166,7 +172,7 @@ def resolve_active_archive_for_song_key(
         raise StoreError("No active song archives are loaded; run Full refresh and try again")
 
     incomplete: list[str] = []
-    matches: dict[str, SongFile] = {}
+    matches: dict[str, tuple[SongFile, int]] = {}
     for row in active_rows:
         if row.identity is None:
             incomplete.append(row.relative_path)
@@ -187,12 +193,13 @@ def resolve_active_archive_for_song_key(
         if not _metadata_is_complete(metadata):
             incomplete.append(row.relative_path)
             continue
+        records = metadata_song_records(metadata)
         if any(
             str(song.get("song_key") or "").strip().casefold() == wanted
-            for song in metadata_song_records(metadata)
+            for song in records
         ):
             key = str(row.path.resolve(strict=False)).casefold()
-            matches[key] = row
+            matches[key] = (row, len(records))
 
     if incomplete:
         sample = ", ".join(incomplete[:3])
@@ -207,12 +214,18 @@ def resolve_active_archive_for_song_key(
             "Run Full refresh / Read titles and try again."
         )
     if len(matches) > 1:
-        paths = ", ".join(row.relative_path for row in matches.values())
+        paths = ", ".join(row.relative_path for row, _song_count in matches.values())
         raise StoreError(
             f"SongKey {song_key} appears in multiple active archives ({paths}); "
             "no archive was queued. Select an archive manually in the app."
         )
-    return next(iter(matches.values()))
+    row, song_count = next(iter(matches.values()))
+    if require_single_song_archive and song_count != 1:
+        raise StoreError(
+            f"SongKey {song_key} is inside a {song_count}-track pack. No archive moved. "
+            "Split the pack into individual songs, then retry the saved F10 mark."
+        )
+    return row
 
 
 def _metadata_is_complete(metadata: dict | None) -> bool:
