@@ -81,7 +81,7 @@ class GuidedTuningFlowTests(unittest.TestCase):
         self.assertEqual(update.status, "open_tuned")
         self.assertTrue(update.advanced)
         self.assertEqual(update.next_step, (6, "fret12"))
-        self.assertAlmostEqual(flow.target_frequency(target), flow.measurements[6]["open"] * 2.0)
+        self.assertAlmostEqual(flow.target_frequency(target), target * 2.0)
 
     def test_fret12_advances_only_at_exact_open_octave(self):
         flow = GuidedTuningFlow()
@@ -523,7 +523,14 @@ class TunerViewTests(unittest.TestCase):
 
     def test_normal_tuner_view_has_only_setup_sequence_and_navigation_controls(self):
         checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
-        checker.master = object()
+        checker.master = SimpleNamespace(
+            tune_first_game_song_var=Variable(True),
+            tuning_pitch_choice_to_value={"Jons standard A=440": "a440", "Rocksmith original": "rocksmith"},
+            tuning_pitch_reference_var=Variable("Jons standard A=440"),
+            tuning_status_var=Variable(""),
+            operation_buttons=[],
+            _save_tuning_settings=Mock(),
+        )
         checker.closed = False
         checker.discovery_id = None
         checker.window = _FakeWidget()
@@ -570,6 +577,9 @@ class TunerViewTests(unittest.TestCase):
         self.assertIn("Retry / resume audio", labels)
         self.assertIn("Stop listening", labels)
         self.assertIn("Return to main", labels)
+        self.assertIn("First Song Tuning Preferences", labels)
+        self.assertIn("Do you want to tune once every time you start the game?", labels)
+        self.assertIn("Save First Song Tuning Preferences", labels)
         self.assertIs(checker.return_button.args[0].args[0], checker.footer_frame)
         for removed in (
             "Speaker monitoring",
@@ -591,13 +601,17 @@ class TunerViewTests(unittest.TestCase):
             self.assertIsNone(reading["cents"])
             self.assertEqual(reading["state"],"CHECK STRING / STAGE")
 
-    def test_fret12_without_open_never_shows_an_invented_reference(self):
+    def test_fret12_can_be_checked_directly_and_reports_cents_from_same_hz_pair(self):
         checker=self.make_checker(stage="fret12")
-        checker.current_pitch=pitch(frequency_for_note("E3"),1.0)
+        measured_hz = 165.0
+        for timestamp in (1.0, 1.1, 1.2):
+            self.observe(checker, measured_hz, timestamp)
         reading=checker._live_comparison()
-        self.assertIsNone(reading["target"])
-        self.assertIsNone(reading["cents"])
-        self.assertEqual(reading["state"],"CAPTURE OPEN FIRST")
+        self.assertAlmostEqual(reading["target"], frequency_for_note("E3"), places=5)
+        self.assertAlmostEqual(reading["measured"], measured_hz, places=5)
+        self.assertAlmostEqual(reading["cents"], cents_difference(measured_hz, frequency_for_note("E3")), places=5)
+        self.assertAlmostEqual(reading["cents"], 2.0, delta=0.1)
+        self.assertNotEqual(reading["state"], "CAPTURE OPEN FIRST")
 
     def test_return_button_closes_tuner_without_modal_grab(self):
         checker = self.make_checker()

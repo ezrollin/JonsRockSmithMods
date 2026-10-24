@@ -18,7 +18,7 @@ RUNTIME_FILES = (
     'game_song_requests.py', 'game_tuning_settings.py', 'ini_settings.py', 'intonation_analysis.py',
     'intonation_checker.py', 'library_health.py', 'library_health_view.py',
     'library_refresh.py', 'metadata_cache.py', 'native_install.py', 'pending_moves.py',
-    'song_store.py', 'song_table.py', 'speed_config.py', 'split_pack.py',
+    'song_store.py', 'song_table.py', 'speed_config.py', 'split_pack.py', 'track_selection.py',
     'startup_config.py', 'toolkit_runtime.py', 'tuner_settings.py', 'ui_layout.py',
     'waveform_input.py', 'favorites/__init__.py', 'favorites/profile.py',
     'metadata/metadata.py', 'metadata/difficulty.py', 'requirements.txt',

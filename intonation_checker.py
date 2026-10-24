@@ -66,6 +66,7 @@ class IntonationCheckerWindow:
         self._close_wait_started = None
         self._close_callbacks = []
         self.closing = False
+        self._game_tuning_save_button = None
         self._build()
         self._update_instruction()
         self.startup_id = self.window.after(100, self.refresh_devices)
@@ -118,15 +119,69 @@ class IntonationCheckerWindow:
             self.reference_table.column(key, width=width, anchor='center', stretch=True)
         self.reference_table.grid(row=0, column=0, sticky='ew')
         self._refresh_reference_table()
-        ttk.Label(chart, text='OPEN and FRET 12 live targets match these A440 chart values. Tune OPEN first; FRET 12 must be within 5 cents of its listed target.',
+        ttk.Label(chart, text='Choose OPEN or FRET 12 directly. Both stages use these A440 chart targets; checking FRET 12 does not require an open-string reading.',
                   wraplength=760).grid(row=1, column=0, sticky='w', pady=(4, 0))
+        preferences = ttk.LabelFrame(root, text='First Song Tuning Preferences', padding=10)
+        preferences.grid(row=3, column=0, sticky='ew', pady=(10, 0))
+        preferences.columnconfigure(0, weight=1)
+        ttk.Label(
+            preferences,
+            text='Do you want to tune once every time you start the game?',
+        ).grid(row=0, column=0, sticky='w')
+        ttk.Radiobutton(
+            preferences,
+            text='Yes — show the tuner before the first song',
+            value=True,
+            variable=self.master.tune_first_game_song_var,
+        ).grid(row=1, column=0, sticky='w', pady=(3, 0))
+        ttk.Radiobutton(
+            preferences,
+            text='No — skip the tuner before the first song',
+            value=False,
+            variable=self.master.tune_first_game_song_var,
+        ).grid(row=2, column=0, sticky='w')
+        ttk.Label(
+            preferences,
+            text='Which intonation tuning should Rocksmith use?',
+        ).grid(row=3, column=0, sticky='w', pady=(8, 0))
+        for row, (label, _value) in enumerate(self.master.tuning_pitch_choice_to_value.items(), start=4):
+            ttk.Radiobutton(
+                preferences,
+                text=label,
+                value=label,
+                variable=self.master.tuning_pitch_reference_var,
+            ).grid(row=row, column=0, sticky='w', pady=1)
+        self._game_tuning_save_button = ttk.Button(
+            preferences,
+            text='Save First Song Tuning Preferences',
+            command=self.master._save_tuning_settings,
+        )
+        self._game_tuning_save_button.grid(row=6, column=0, sticky='w', pady=(7, 2))
+        if hasattr(self.master, 'operation_buttons'):
+            self.master.operation_buttons.append(self._game_tuning_save_button)
+        ttk.Label(
+            preferences,
+            textvariable=self.master.tuning_status_var,
+            wraplength=760,
+        ).grid(row=7, column=0, sticky='ew', pady=3)
+        ttk.Label(
+            preferences,
+            text=(
+                'Rocksmith shows its tuner at the start of a game session. This choice controls that first-song screen; '
+                'later songs do not show another tuner until you restart Rocksmith. Save with Rocksmith closed, then '
+                'restart it. The JonsRockSmithMods choice uses equal-tempered A=440 note targets while keeping each song’s '
+                'semitone tuning; it corrects chart-authored cents offsets and does not retune backing audio. '
+                'The compatible Jons RSMods extension is required.'
+            ),
+            wraplength=760,
+        ).grid(row=8, column=0, sticky='ew', pady=(3, 0))
         live = ttk.LabelFrame(root, text='Live reading - selected stage stays fixed', padding=10)
-        live.grid(row=3, column=0, sticky='ew')
+        live.grid(row=4, column=0, sticky='ew', pady=(10, 0))
         self.tuner_canvas = tk.Canvas(live, height=285, background='#101923', highlightthickness=0, borderwidth=0)
         self.tuner_canvas.pack(fill='x', expand=True)
         self.tuner_canvas.bind('<Configure>', self._draw_tuner)
         ttk.Label(live, textvariable=self.live_detail_var, wraplength=760).pack(anchor='w', pady=6)
-        for row, variable in ((4, self.instruction_var), (5, self.input_status_var), (6, self.preference_status_var)):
+        for row, variable in ((5, self.instruction_var), (6, self.input_status_var), (7, self.preference_status_var)):
             ttk.Label(root, textvariable=variable, wraplength=760, padding=(0, 4)).grid(row=row, column=0, sticky='ew')
         self.footer_frame = ttk.Frame(host, padding=(12, 7))
         self.footer_frame.grid(row=1, column=0, sticky='ew')
@@ -218,7 +273,7 @@ class IntonationCheckerWindow:
         return self.flow.target_frequency(self._tuning_target(self.flow.string_number)[1])
 
     def _retarget_input(self):
-        """Guide detection with a preset octave if needed; comparisons still require captured open."""
+        """Guide detection with the selected stage's nominal tuning-chart target."""
         if self.capture is not None:
             target = self._display_target()
             if target is None:
@@ -251,7 +306,7 @@ class IntonationCheckerWindow:
             changed_input = self.capture is not None and self.capture.device != chosen
             if changed_input:
                 self.flow.reset()
-                self._clear_live_reading('Input changed; capture a fresh open reference.')
+                self._clear_live_reading('Input changed; wait for three fresh stable readings.')
             if (changed_input or not self._audio_active()) and (not self.paused):
                 self.start_tuning()
         except Exception as exc:
@@ -360,21 +415,25 @@ class IntonationCheckerWindow:
             text = f'SELECTED: String {number} OPEN - {note}, target {nominal:.2f} Hz. {state} Stage never changes automatically.'
         else:
             target = self._display_target()
-            text = f'SELECTED: String {number} FRET 12 - target {target:.2f} Hz from the A440 tuning chart. Press at fret 12 with normal playing pressure. If sharp, lengthen the saddle speaking length; if flat, shorten it. Retune OPEN after adjustment and recheck.' if target else f"SELECTED: String {number} FRET 12. Tune and confirm this string's OPEN pitch first."
+            text = f'SELECTED: String {number} FRET 12 - target {target:.2f} Hz from the A440 tuning chart. No open-string reading is needed. Press at fret 12 with normal playing pressure. If sharp, lengthen the saddle speaking length; if flat, shorten it. Recheck after each small saddle adjustment.'
         self.instruction_var.set(text)
 
     def _update_live_detail(self, update):
-        messages = {'wrong_octave': 'Wrong octave detected. Check chosen string and OPEN / FRET 12; do not retune by an octave.', 'out_of_range': 'Pitch outside this string/stage range. Check selection; no adjustment cue.', 'missing_open_reference': 'Choose OPEN and capture a stable reference first.', 'invalid_pitch': 'Pitch unclear. Pluck one string cleanly and let it settle.', 'clipped': 'Input clipping. Lower Windows input level and pluck again.', 'unstable': 'Pitch moving. Let the note settle before comparing.', 'waiting': 'Waiting for three fresh, stable readings.'}
+        messages = {'wrong_octave': 'Wrong octave detected. Check the chosen string and stage; do not retune by an octave.', 'out_of_range': 'Pitch outside this string/stage range. Check selection; no adjustment cue.', 'invalid_pitch': 'Pitch unclear. Pluck one string cleanly and let it settle.', 'clipped': 'Input clipping. Lower Windows input level and pluck again.', 'unstable': 'Pitch moving. Let the note settle before comparing.', 'waiting': 'Waiting for three fresh, stable readings.'}
         if update.status in messages:
             self.current_live_message = messages[update.status]
             self.live_detail_var.set(messages[update.status])
             return
-        cents = update.cents_from_target
+        cents = (
+            cents_difference(update.measured_frequency_hz, update.target_frequency_hz)
+            if update.measured_frequency_hz is not None and update.target_frequency_hz is not None
+            else update.cents_from_target
+        )
         _, action = tuner_adjustment(cents, 5)
         if self.flow.stage == 'open':
             self.live_detail_var.set(f'Open pitch: {update.measured_frequency_hz:.2f} Hz vs {update.target_frequency_hz:.2f} Hz A440 target; {cents:+.1f} cents. {action}. ' + ('OPEN confirmed; manually choose FRET 12.' if update.status == 'open_tuned' else 'Adjust the open-string tuning.'))
         else:
-            guidance = '12th fret matches the A440 target.' if abs(cents) <= 5 else 'Lengthen the saddle speaking length, then retune open.' if cents > 0 else 'Shorten the saddle speaking length, then retune open.'
+            guidance = '12th fret matches the A440 target.' if abs(cents) <= 5 else 'Lengthen the saddle speaking length in a small step.' if cents > 0 else 'Shorten the saddle speaking length in a small step.'
             self.live_detail_var.set(f'12th fret: {update.measured_frequency_hz:.2f} Hz vs {update.target_frequency_hz:.2f} Hz target; {cents:+.1f} cents. {action}. {guidance}')
 
     def _live_comparison(self):
@@ -387,18 +446,23 @@ class IntonationCheckerWindow:
         update = self.last_update
         if pitch is not None and target is not None:
             raw = cents_difference(pitch.frequency_hz, target)
-            accepted = update is not None and update.status in ('tune_open', 'open_tuned', 'tune_fret12', 'fret12_measured')
-            if accepted and update.cents_from_target is not None and not pitch.clipped and pitch.confidence >= 0.65 and (abs(raw) <= 100):
-                cents = update.cents_from_target
+            accepted = (
+                update is not None
+                and update.string_number == number
+                and update.stage == stage
+                and update.status in ('tune_open', 'open_tuned', 'tune_fret12', 'fret12_measured')
+            )
+            if (accepted and update.measured_frequency_hz is not None
+                    and update.target_frequency_hz is not None
+                    and not pitch.clipped and pitch.confidence >= 0.65 and abs(raw) <= 100):
+                cents = cents_difference(update.measured_frequency_hz, update.target_frequency_hz)
                 state = pitch_state(cents, 5)
                 band = pitch_band(cents, 5)
             elif pitch.clipped or pitch.confidence < 0.65 or abs(raw) > 100:
                 state = 'CHECK STRING / STAGE'
             else:
                 state = 'WAIT FOR STABLE NOTE'
-        elif target is None:
-            state = 'CAPTURE OPEN FIRST'
-        return {'pitch': pitch, 'measured': update.measured_frequency_hz if cents is not None else None, 'note': pitch.note_name if pitch else self.current_live_message, 'cents': cents, 'target': target, 'string': STRING_LABELS[6 - number], 'stage': stage, 'state': state, 'band': band}
+        return {'pitch': pitch, 'measured': update.measured_frequency_hz if cents is not None and update is not None else None, 'note': pitch.note_name if pitch else self.current_live_message, 'cents': cents, 'target': target, 'string': STRING_LABELS[6 - number], 'stage': stage, 'state': state, 'band': band}
 
     def _draw_tuner(self, _event=None):
         canvas = self.tuner_canvas
@@ -501,6 +565,12 @@ class IntonationCheckerWindow:
             return
         self.closed = True
         self.closing = False
+        game_tuning_save_button = getattr(self, '_game_tuning_save_button', None)
+        if game_tuning_save_button is not None:
+            try:
+                self.master.operation_buttons.remove(game_tuning_save_button)
+            except (AttributeError, ValueError):
+                pass
         try:
             if self.window.winfo_exists():
                 self.window.destroy()

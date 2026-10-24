@@ -334,17 +334,25 @@ class ManualIntonationSessionTests(unittest.TestCase):
         self.assertEqual('wrong_octave', update.status)
         self.assertIsNone(update.cents_from_target)
 
-    def test_fret12_requires_open_and_other_string_references_are_separate(self):
+    def test_fret12_can_be_checked_without_an_open_reference(self):
         from intonation_analysis import ManualIntonationSession
         session = ManualIntonationSession()
-        self.stable(session, 82.4069, 82.4069)
         session.select(5, 'fret12')
         update = session.observe(self.pitch(220., 2.), 110.)
-        self.assertEqual('missing_open_reference', update.status)
+        self.assertEqual('waiting', update.status)
+        update = self.stable(session, 220., 110., 2.1)
+        self.assertEqual('fret12_measured', update.status)
+        self.assertAlmostEqual(220., update.target_frequency_hz)
         session.select(6, 'fret12')
         update = self.stable(session, 164.8138 * 2 ** (12. / 1200.), 82.4069, 3.)
         self.assertEqual('tune_fret12', update.status)
         self.assertAlmostEqual(12., update.cents_from_target)
+
+    def test_reported_low_e_frequencies_have_consistent_cents(self):
+        low_e_open_target = frequency_for_note('E2')
+        low_e_octave_target = frequency_for_note('E3')
+        self.assertAlmostEqual(-30.0, cents_difference(81.0, low_e_open_target), delta=0.5)
+        self.assertAlmostEqual(2.0, cents_difference(165.0, low_e_octave_target), delta=0.2)
 
     def test_clipped_low_confidence_and_out_of_range_are_not_captured(self):
         from intonation_analysis import ManualIntonationSession

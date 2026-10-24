@@ -1,4 +1,4 @@
-# JonsRockSmithMods 0.24.0
+# JonsRockSmithMods 0.25.0
 
 Windows companion for Rocksmith 2014 Remastered: reversible song removal, whole-pack splitting, difficulty/speed settings, and explicit guitar intonation tuning.
 
@@ -19,22 +19,22 @@ If Steam uses a different library, place it inside your actual Rocksmith2014 fol
 
 ## Verify YOUR file links first
 
-Open **Setup & startup** and use **Browse** to verify this computer's Rocksmith folder, Do Not Want backup folder, and Steam profile ending in `*_PRFLDB`. Paths differ between Windows users, Steam accounts, drives and libraries. Do not copy another person's user/profile paths or edit source code to change these links. Archive/title/split/difficulty features also need a separately installed compatible Rocksmith Toolkit; details are in INSTALL.md.
+Open **Setup & startup** and use **Browse** to verify this computer's Rocksmith folder, Do Not Want backup folder, and Steam profile ending in `*_PRFLDB`. By default, the backup folder is `DoNotWantSongs` inside the configured Rocksmith2014 folder; changing the Rocksmith folder updates this default until you choose a custom backup path. Paths differ between Steam accounts, drives and libraries. Do not copy another person's user/profile paths or edit source code to change these links. Archive/title/split/difficulty features also need a separately installed compatible Rocksmith Toolkit; details are in INSTALL.md.
 
-**Setup & startup displays the running version, EXE/Python mode, and exact running path.** The EXE's Windows file properties also show version 0.24.0. Use these to distinguish an old copy.
+**Setup & startup displays the running version, EXE/Python mode, and exact running path.** The EXE's Windows file properties also show version 0.25.0. Use these to distinguish an old copy.
 
 ## Features and limits
 
 - Check or select song archives in the companion while the game runs; queue reversible removal. After Rocksmith closes, confirmed whole archives move to Do Not Want and can be restored. Keep/reopen the companion to process work.
 - To remove individual tracks from a pack, split/replace the complete pack with verified single-song files first, then queue only the songs you want moved.
 - **Native in-game removal is optional.** With a locally built compatible Jons RSMods extension, the F10 hint appears only while a live song preview is selected. Press F10 to mark that preview. After Rocksmith closes, the companion automatically moves a safely matched single-song archive to Do Not Want; keep the companion open or reopen it afterward. Undo last completed removal restores the file. Multi-song packs are refused and must be split first. F10 does not identify an arrangement already playing.
-- **Game pitch detection is configurable.** Choose Rocksmith's chart-authored reference or standard A440 note detection while preserving the chart's semitone tuning, including Drop D. Optional first-song skip sends the game's Delete skip key once per Rocksmith launch. A440 changes note detection only; it does not retune backing audio. These settings need the compatible native extension and a game restart.
+- **First Song Tuning Preferences** are in the Tune guitar window. Choose whether to tune once at the first song after every game launch, and choose JonsRockSmithMods equal-tempered A=440 pitch targets or Rocksmith's original per-song pitch reference. Jons standard preserves each song's semitone tuning, including Drop D, and corrects chart-authored cents offsets; it does not retune backing audio. Rocksmith shows no later song tuner in the same session. Save with Rocksmith closed and restart the game to apply these settings; the compatible native extension is required.
 - The optional modified RSMods DLL is **not included in public downloads**: upstream has no stated redistribution license. Developer build/provenance instructions are in native/README.md. Manual companion selection/removal works without that extension. Upstream RSMods installation is separate.
 - Split a complete, self-contained pack into verified single-song archives. Only after verification does the original pack move to Do Not Want. Missing recordings cannot be reconstructed by splitting.
 - Read-only health checks show charts, embedded audio, missing installed dependencies and detailed reports. File size and structural checks do not prove game playback.
 - Sight Reading levels 1-10: writes require Rocksmith closed, exact chart mappings and a verified profile backup; restart Rocksmith to load changes. Bulk results report success/partial success/failure and skipped songs. F11/F12 in-game difficulty keys are not shipped because there is no verified live setter. Global starting level and automatic difficulty still affect all songs; skipped saved phrase values stay unchanged.
 - Per-song speed defaults to 85% when newly configured; native enforcement requires the compatible optional extension. It does not rewrite recording assets.
-- Guitar input starts automatically for a recognized or explicitly selected cable. Choose string and OPEN/FRET 12 yourself; chart highlight follows the selected string. `<` lowers and `>` raises pitch. Fret 12 requires a stable open-string check first, then compares against twice the selected tuning chart's nominal open frequency. Personal offsets were removed. Shared driver access and actual guitar accuracy require user validation.
+- Guitar input starts automatically for a recognized or explicitly selected cable. Choose string and OPEN/FRET 12 yourself; chart highlight follows the selected string. `<` lowers and `>` raises pitch. Either stage can be checked first. Fret 12 compares directly against twice the selected tuning chart's nominal open frequency; no open-string reading is required. The live meter calculates cents from the same measured and target Hz it displays, with red/amber/green distance bands. Shared driver access and physical guitar accuracy require user validation.
 - Tuner reference chart updates for every listed tuning style and shows open/12th-fret Hz for all six strings. E Standard shows low E2 at 82.41/164.81 Hz and A2 at 110.00/220.00 Hz. Live reading shows measured Hz, fixed target Hz, cents offset, and flat/near/in-tune/sharp color bands.
 - Queue warnings state that whole checked PSARCs move to Do Not Want after game exit; nothing is permanently deleted. Undo queued moves before processing or restore the identity-checked last completed queue batch afterward, including after restarting the app.
 

@@ -22,14 +22,14 @@ The executable or app.py must be directly inside that JonsRockSmithMods folder, 
 - Python: `Setup Python.bat` once, then `Run Python.bat`.
 - `Launch JonsRockSmithMods.bat` offers both choices explicitly.
 
-On Setup & startup, confirm running version **0.24.0**, mode and path. File Properties > Details also shows EXE version 0.24.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
+On Setup & startup, confirm running version **0.25.0**, mode and path. File Properties > Details also shows EXE version 0.25.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
 
 ## 4. Check file links before use
 
 Browse and verify:
 
 1. **Rocksmith 2014 folder:** contains Rocksmith2014.exe; songs install under its `dlc` folder.
-2. **Do Not Want folder:** your reversible backup destination, outside active `dlc`. Do not point this at someone else's Windows user folder or nest it inside the active song library.
+2. **Do Not Want folder:** defaults to `Rocksmith2014\DoNotWantSongs`, outside active `dlc`, and follows the selected Rocksmith folder while still at its default. Browse to choose another reversible backup destination. Do not point this at someone else's Windows user folder or nest it inside the active song library.
 3. **Rocksmith profile:** your Steam account's exact `*_PRFLDB`, normally under `Steam/userdata/<your-account>/221680/remote`. Do not select another user's profile. Account IDs differ.
 4. **Toolkit files:** install compatible Rocksmith Toolkit separately. The app searches Rocksmith2014/RocksmithToolkit, your current Desktop/RocksmithToolkit, or Program Files/Rocksmith 2014 DLC Builder. The chosen folder must contain RocksmithToolkitLib.dll and its dependencies. No Toolkit or game content is bundled. See the official project https://github.com/rscustom/rocksmith-custom-song-toolkit .
 
@@ -43,15 +43,15 @@ To remove a track from a multi-song pack, use **Split up whole song pack** and r
 
 In-game F10 requires the optional compatible Jons native extension, installed while Rocksmith is closed and loaded after restart. Its hint appears while a fresh song preview is selected; press F10 to mark that preview. Keep the companion open or reopen it after Rocksmith exits. It automatically moves a verified single-song archive to Do Not Want and saves an undo record. It refuses a multi-song pack so one track mark cannot move unrelated tracks; split the pack into individual archives first, then retry the saved F10 mark. No archive moves while Rocksmith is running. F10 does not identify an arrangement already playing.
 
-## Game pitch detection and first-song tuner
+## First Song Tuning Preferences
 
-On **Setup & startup**, choose **A440 standard** to make note detection use the equal-tempered concert-pitch reference while preserving each chart's note names and semitone tuning, such as Drop D. Choose **Rocksmith chart-authored pitch reference** to keep the original cents target. The optional **Skip the first pre-song tuner** setting sends the game's Delete/skip command only on the first song-specific pre-song tuner after each launch; later songs still show the tuner. These native settings are saved in `JonsRockSmithMods.ini`, with a verified timestamped backup. Close Rocksmith before saving, then restart it.
+In **Tune guitar**, choose whether you want the tuner once each time Rocksmith starts and which pitch reference it should use. **Use JonsRockSmithMods standard tuning (A=440)** corrects chart-authored cents offsets while preserving the song's semitone tuning, such as Drop D. **Use Rocksmith's original per-song pitch reference** keeps the original authored target. A=440 changes note detection only; it does not pitch-shift backing audio. These settings are saved in `JonsRockSmithMods.ini`, with a verified timestamped backup. Close Rocksmith before saving, then restart it. Rocksmith shows no tuner on later songs during the same game session; restart the game for the next first-song tuner.
 
 A440 changes the note target only. It does not pitch-shift backing audio. A chart with an intentionally detuned recording can therefore sound out of tune when its detection target is normalized. The A440 hook runs only on the two supported Rocksmith executable checksums in the native source; an unrecognized build leaves the authored reference active and logs the reason. The public download excludes the native DLL, so the settings require a compatible locally built Jons extension.
 
 The modified upstream native DLL is intentionally omitted from public downloads because no upstream redistribution license was found. Developer source/patch build instructions are in native/README.md in the repository. Do not download unknown replacement DLLs or overwrite an incompatible version. No public download silently installs a native module.
 
-In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice the nominal open pitch). The selected table row always follows the string selector. A stable open reading is required before the 12th-fret check, but does not change its target. Personal pitch offsets are not used. The live meter shows actual and target Hz, cents difference, and red/amber/green tuning bands. Closing the tuner waits for its audio-capture thread to release the cable before the window closes.
+In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice the nominal open pitch). The selected table row follows the string selector. Choose OPEN or FRET 12 directly; fret 12 needs no open-string reading first and always uses the nominal chart target. The live meter's cents value comes from the same measured and target Hz values shown beside it. Closing the tuner waits for its audio-capture thread to release the cable before the window closes.
 
 ## 6. Common errors
 

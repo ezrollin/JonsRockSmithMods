@@ -77,13 +77,18 @@ from speed_config import (
     read_song_speed_config, write_song_speed_config, write_song_speed_configs,
 )
 from startup_config import read_startup_config, write_startup_config
+from track_selection import TrackCheckboxSelection
 from ui_layout import ScrollablePage, initial_window_size
 
 
-APP_VERSION = "0.24.0"
+APP_VERSION = "0.25.0"
 DEFAULT_DIFFICULTY_PERCENT = 50
 DEFAULT_GAME = next((parent for parent in Path(__file__).resolve().parents if (parent / "Rocksmith2014.exe").is_file()), Path(r"C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014"))
-DEFAULT_REVIEW = Path.home() / "Documents" / "JonsRockSmithMods" / "DoNotWant"
+DEFAULT_REVIEW = DEFAULT_GAME / "DoNotWantSongs"
+GAME_PITCH_REFERENCE_CHOICES = (
+    ("Use JonsRockSmithMods standard tuning (A=440; corrects chart pitch offsets)", PITCH_REFERENCE_A440),
+    ("Use Rocksmith's original per-song pitch reference", PITCH_REFERENCE_ROCKSMITH),
+)
 LOG_PATH = Path.home() / "Documents" / "JonsRockSmithMods" / "JonsRockSmithMods.log"
 METADATA_PATH = LOG_PATH.with_name("metadata_cache.json")
 PENDING_MOVE_QUEUE_PATH = LOG_PATH.with_name("pending_song_moves.json")
@@ -275,13 +280,21 @@ class App(tk.Tk):
         self.minsize(min(720, width), min(480, height))
         self.game_var = tk.StringVar(value=str(DEFAULT_GAME))
         self.review_var = tk.StringVar(value=str(DEFAULT_REVIEW))
+        self._review_path_is_default = True
+        self._setting_default_review_path = False
         self.profile_var = tk.StringVar(value=self._discover_profile())
         self.filter_var = tk.StringVar()
         self.speed_enabled_var = tk.BooleanVar(value=False)
         self.speed_percent_var = tk.StringVar(value=str(DEFAULT_SPEED_PERCENT))
         self.speed_status_var = tk.StringVar(value="Checking Jons RSMods extension...")
-        self.tuning_pitch_reference_var = tk.StringVar(value="")
-        self.skip_first_tuner_var = tk.BooleanVar(value=DEFAULT_SKIP_FIRST_TUNER)
+        self.tuning_pitch_choice_to_value = dict(GAME_PITCH_REFERENCE_CHOICES)
+        self.tuning_pitch_value_to_choice = {
+            value: label for label, value in GAME_PITCH_REFERENCE_CHOICES
+        }
+        self.tuning_pitch_reference_var = tk.StringVar(
+            value=self.tuning_pitch_value_to_choice[DEFAULT_PITCH_REFERENCE]
+        )
+        self.tune_first_game_song_var = tk.BooleanVar(value=not DEFAULT_SKIP_FIRST_TUNER)
         self.tuning_status_var = tk.StringVar(value="Loading game tuning settings...")
         self.difficulty_percent_var = tk.StringVar(value=str(DEFAULT_DIFFICULTY_PERCENT))
         self.difficulty_level_var = tk.StringVar(value="5")
@@ -544,8 +557,8 @@ class App(tk.Tk):
             browse_button = ttk.Button(paths, text="Browse", command=browse)
             browse_button.grid(row=row * 2 + 1, column=1, padx=(8, 0))
             self.path_controls.extend((entry, browse_button))
-        self.game_var.trace_add("write", lambda *_: self._invalidate_library_scan())
-        self.review_var.trace_add("write", lambda *_: self._invalidate_library_scan())
+        self.game_var.trace_add("write", lambda *_: self._game_path_changed())
+        self.review_var.trace_add("write", lambda *_: self._review_path_changed())
         self.profile_var.trace_add("write", lambda *_: self._invalidate_favorites_scan())
         self.destination_var.set(self._store_destination_label())
         self.review_var.trace_add("write", lambda *_: self.destination_var.set(self._store_destination_label()))
@@ -553,46 +566,6 @@ class App(tk.Tk):
         self.open_songs_folder_button = ttk.Button(paths, text="Open Do Not Want songs folder", command=self._open_do_not_want_folder)
         self.open_songs_folder_button.grid(row=7, column=0, sticky="w")
         self.operation_buttons.append(self.open_songs_folder_button)
-        tuning = ttk.LabelFrame(setup, text="Game pitch detection and first song", padding=10)
-        tuning.pack(fill="x", pady=(0, 12))
-        ttk.Label(tuning, text="Note-detection pitch reference").grid(row=0, column=0, sticky="w")
-        pitch_choices = (
-            "A440 standard (keep chart tuning such as Drop D)",
-            "Rocksmith chart-authored pitch reference",
-        )
-        self.tuning_pitch_choice_to_value = {
-            pitch_choices[0]: PITCH_REFERENCE_A440,
-            pitch_choices[1]: PITCH_REFERENCE_ROCKSMITH,
-        }
-        self.tuning_pitch_value_to_choice = {value: label for label, value in self.tuning_pitch_choice_to_value.items()}
-        self.tuning_pitch_reference_var.set(self.tuning_pitch_value_to_choice[DEFAULT_PITCH_REFERENCE])
-        pitch_selector = ttk.Combobox(
-            tuning, textvariable=self.tuning_pitch_reference_var,
-            values=pitch_choices, state="readonly", width=54,
-        )
-        pitch_selector.grid(row=1, column=0, sticky="ew", pady=(3, 8))
-        tuning.columnconfigure(0, weight=1)
-        ttk.Checkbutton(
-            tuning,
-            text="Skip the first pre-song tuner after each Rocksmith launch",
-            variable=self.skip_first_tuner_var,
-        ).grid(row=2, column=0, sticky="w", pady=3)
-        save_tuning = ttk.Button(tuning, text="Save game tuning settings", command=self._save_tuning_settings)
-        save_tuning.grid(row=3, column=0, sticky="w", pady=(5, 3))
-        self.operation_buttons.append(save_tuning)
-        ttk.Label(tuning, textvariable=self.tuning_status_var, wraplength=700).grid(
-            row=4, column=0, sticky="ew", pady=4
-        )
-        ttk.Label(
-            tuning,
-            text=(
-                "A440 changes Rocksmith's note-detection reference while keeping the chart's semitone tuning; "
-                "it does not retune the backing audio. If a recording is intentionally detuned, it may sound "
-                "out of tune against A440. The skip applies once per game launch; later songs still show their tuner. "
-                "Requires the compatible Jons RSMods extension. Close Rocksmith to save, then restart it."
-            ),
-            wraplength=700,
-        ).grid(row=5, column=0, sticky="ew", pady=(3, 0))
         extension = ttk.LabelFrame(setup, text="RSMods integration", padding=10)
         extension.pack(fill="x", pady=(0, 12))
         ttk.Label(extension, textvariable=self.speed_status_var, wraplength=700).pack(anchor="w")
@@ -724,12 +697,15 @@ class App(tk.Tk):
             self.tuning_pitch_reference_var.set(
                 self.tuning_pitch_value_to_choice[pitch_reference]
             )
-            self.skip_first_tuner_var.set(skip_first_tuner)
-            pitch_name = "A440 standard" if pitch_reference == PITCH_REFERENCE_A440 else "Rocksmith-authored"
-            skip_name = "on" if skip_first_tuner else "off"
+            self.tune_first_game_song_var.set(not skip_first_tuner)
+            pitch_name = (
+                "JonsRockSmithMods standard A=440"
+                if pitch_reference == PITCH_REFERENCE_A440 else "Rocksmith original"
+            )
+            tune_name = "yes" if not skip_first_tuner else "no"
             self.tuning_status_var.set(
-                f"Loaded: {pitch_name} note reference; first-song tuner skip {skip_name}. "
-                "Requires the compatible Jons extension and a game restart to apply."
+                f"Loaded: {pitch_name}; tune at first song: {tune_name}. "
+                "Close and restart Rocksmith before these settings take effect."
             )
         except (OSError, ValueError, StoreError, KeyError) as exc:
             logging.exception("Cannot load game tuning settings")
@@ -740,7 +716,7 @@ class App(tk.Tk):
         pitch_reference = self.tuning_pitch_choice_to_value.get(choice)
         if pitch_reference is None:
             messagebox.showwarning(
-                "Game tuning settings", "Choose a note-detection pitch reference before saving."
+                "First Song Tuning Preferences", "Choose which tuning Rocksmith should use."
             )
             return
         game = Path(self.game_var.get())
@@ -749,9 +725,31 @@ class App(tk.Tk):
             lambda: write_game_tuning_settings(
                 game / "JonsRockSmithMods.ini",
                 pitch_reference,
-                self.skip_first_tuner_var.get(),
+                not self.tune_first_game_song_var.get(),
             ),
         )
+
+    def _game_path_changed(self) -> None:
+        self._invalidate_library_scan()
+        if not self._review_path_is_default:
+            return
+        game_path = self.game_var.get().strip()
+        if not game_path:
+            return
+        try:
+            new_default = Path(game_path).expanduser() / "DoNotWantSongs"
+        except (OSError, ValueError):
+            return
+        self._setting_default_review_path = True
+        try:
+            self.review_var.set(str(new_default))
+        finally:
+            self._setting_default_review_path = False
+
+    def _review_path_changed(self) -> None:
+        if not self._setting_default_review_path:
+            self._review_path_is_default = False
+        self._invalidate_library_scan()
 
     def _save_startup(self) -> None:
         enabled, profile_name = self.startup_enabled_var.get(), self.startup_profile_var.get().strip()
@@ -963,34 +961,100 @@ class App(tk.Tk):
         page.grid(row=0, column=0, sticky="nsew")
         panel = page.content
         panel.columnconfigure(0, weight=1)
-        ttk.Label(panel, text="Choose exact songs. Ctrl/Shift selects several; settings apply only to selected tracks.",
+        ttk.Label(panel, text="Check the box beside each song you want to edit. You can check several songs or use Select all songs.",
                   wraplength=700).pack(anchor="w", pady=(0, 8))
         list_frame = ttk.Frame(panel)
         list_frame.pack(fill="x")
         list_frame.columnconfigure(0, weight=1)
-        tree = ttk.Treeview(list_frame, columns=("artist", "song", "speed"), show="headings", selectmode="extended", height=6)
-        for name, text, colwidth in (("artist", "Artist", 200), ("song", "Song", 350), ("speed", "Saved speed", 110)):
+        tree = ttk.Treeview(
+            list_frame,
+            columns=("selected", "artist", "song", "speed"),
+            show="headings",
+            selectmode="browse",
+            height=6,
+        )
+        for name, text, colwidth in (
+            ("selected", "Select", 66),
+            ("artist", "Artist", 190),
+            ("song", "Song", 330),
+            ("speed", "Saved speed", 110),
+        ):
             tree.heading(name, text=text)
-            tree.column(name, width=colwidth)
+            tree.column(
+                name,
+                width=colwidth,
+                anchor="center" if name == "selected" else "w",
+                stretch=name in ("artist", "song"),
+            )
         tree.grid(row=0, column=0, sticky="ew")
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
         horizontal = ttk.Scrollbar(list_frame, orient="horizontal", command=tree.xview)
         horizontal.grid(row=1, column=0, sticky="ew")
         tree.configure(yscrollcommand=scroll.set, xscrollcommand=horizontal.set)
+        checkbox_selection = TrackCheckboxSelection(len(tracks))
         for index, (_, song, _) in enumerate(tracks):
             override = overrides.get(song["song_key"].casefold())
             tree.insert("", "end", iid=str(index), values=(
-                song["artist"], song["title"], f"{override}%" if override is not None else "Default"
+                "☐", song["artist"], song["title"],
+                f"{override}%" if override is not None else "Default"
             ))
-        tree.selection_set("0")
+        selection_count_var = tk.StringVar(window, value=f"0 of {len(tracks)} songs selected")
+
+        def refresh_track_checks():
+            for index in range(len(tracks)):
+                tree.set(str(index), "selected", "☑" if checkbox_selection.contains(index) else "☐")
+            selection_count_var.set(
+                f"{len(checkbox_selection.selected_indices())} of {len(tracks)} songs selected"
+            )
+
+        def toggle_track(item):
+            try:
+                index = int(item)
+            except (TypeError, ValueError):
+                return
+            checkbox_selection.toggle(index)
+            refresh_track_checks()
+
+        def on_track_click(event):
+            item = tree.identify_row(event.y)
+            if item and tree.identify_region(event.x, event.y) == "cell" and tree.identify_column(event.x) == "#1":
+                tree.focus(item)
+                toggle_track(item)
+                return "break"
+            return None
+
+        def toggle_focused_track(_event=None):
+            item = tree.focus()
+            if item:
+                toggle_track(item)
+            return "break"
+
+        tree.bind("<Button-1>", on_track_click, add="+")
+        tree.bind("<space>", toggle_focused_track, add="+")
+        selection_controls = ttk.Frame(panel)
+        selection_controls.pack(fill="x", pady=(6, 0))
+
+        def select_all_tracks():
+            checkbox_selection.select_all()
+            refresh_track_checks()
+
+        def clear_track_selection():
+            checkbox_selection.clear()
+            refresh_track_checks()
+
+        ttk.Button(selection_controls, text="Select all songs", command=select_all_tracks).pack(side="left")
+        ttk.Button(selection_controls, text="Clear selection", command=clear_track_selection).pack(
+            side="left", padx=(6, 0)
+        )
+        ttk.Label(selection_controls, textvariable=selection_count_var).pack(side="left", padx=10)
         level_var = tk.StringVar(window, value=self.difficulty_level_var.get())
         speed_var = tk.StringVar(window, value=str(overrides.get(tracks[0][1]["song_key"].casefold(), DEFAULT_SPEED_PERCENT)))
 
         def selected():
-            indices = [int(item) for item in tree.selection()]
+            indices = checkbox_selection.selected_indices()
             if not indices:
-                raise StoreError("Select at least one song.")
+                raise StoreError("Check one or more song boxes.")
             return tuple(tracks[index] for index in indices)
 
         def apply_difficulty():
@@ -2922,10 +2986,12 @@ class App(tk.Tk):
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
         operation_note = (
-            "WARNING: Each listed PSARC leaves active DLC and moves to Do Not Want only after Rocksmith closes. "
-            "No archive is permanently deleted. Undo the queue before it runs, or use Undo last completed removal afterward."
+            "WARNING: After Rocksmith closes, these complete archives leave active DLC and move to the Do Not Want folder. "
+            "Their songs disappear from Rocksmith until restored. Files are not permanently deleted. "
+            "Cancel the queue before it runs, or use Undo last completed removal afterward."
             if queue_after_close else
-            "Moving is reversible through Restore; no song archive is deleted. Close Rocksmith before continuing."
+            "WARNING: These complete archives leave active Rocksmith DLC and move to the Do Not Want folder shown above. "
+            "Their songs disappear from Rocksmith until restored. This is reversible with Restore; files are not permanently deleted."
         )
         summary = (
             f"{len(rows)} complete archive(s), {total_mib:.1f} MiB; {known_records} metadata-listed song record(s); "
@@ -3057,6 +3123,7 @@ class App(tk.Tk):
             candidates,
             store.songs_root,
             context=(
+                f"{len(candidates)} confirmed non-favorite archive(s) will be removed from the game's active song list. "
                 f"{len(active_favorites)} confirmed favorite archive(s) and {unknown} unknown archive(s) stay in the game folder. "
                 "These candidates were classified non-favorite only after profile and archive verification."
             ),

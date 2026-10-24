@@ -79,7 +79,7 @@ class GuidedTuningUpdate:
 
 
 class GuidedTuningFlow:
-    """Advance strings 6 to 1 after stable open and in-tune fret-12 notes."""
+    """Walk through open and fret-12 stages using the tuning chart targets."""
 
     def __init__(
         self,
@@ -131,7 +131,7 @@ class GuidedTuningFlow:
         self._recent.clear()
 
     def target_frequency(self, tuning_open_hz: float) -> float | None:
-        """Use tuning preset for open notes and captured open pitch's octave at fret 12."""
+        """Use the selected tuning's nominal open target and nominal octave target."""
 
         if not math.isfinite(tuning_open_hz) or tuning_open_hz <= 0:
             raise ValueError("Open-string tuning target must be finite and greater than zero")
@@ -141,13 +141,10 @@ class GuidedTuningFlow:
         number, stage = step
         if stage == "open":
             return tuning_open_hz
-        open_hz = self.measurements.get(number, {}).get("open")
-        if open_hz is None:
-            return None
-        return open_hz * 2.0
+        return tuning_open_hz * 2.0
 
     def observe(self, pitch: PitchEstimate, tuning_open_hz: float) -> GuidedTuningUpdate:
-        """Advance only on fresh, stable notes; require open tuning before fret-12 check."""
+        """Advance only on fresh stable notes; compare FRET 12 to its nominal chart target."""
 
         step = self.current_step
         if step is None:
@@ -213,8 +210,9 @@ class ManualIntonationSession:
     """Explicit string/stage selection with fixed equal-tempered targets.
 
     OPEN and FRET 12 compare to the selected tuning's A440 chart values.
-    A stable open reading is required before checking fret 12, but does not
-    shift its target. No observation changes the selected string or stage.
+    Either stage can be checked first. FRET 12 always compares to twice the
+    selected tuning's nominal open frequency. No observation changes the
+    selected string or stage.
     """
 
     def __init__(self, *, stable_samples: int = 3, stability_span_cents: float = 8.0,
@@ -259,17 +257,12 @@ class ManualIntonationSession:
             raise ValueError("Open-string target must be finite and positive")
         if self.stage == "open":
             return tuning_open_hz
-        if self.measurements[self.string_number].get("open") is None:
-            return None
         return tuning_open_hz * 2.0
 
     def observe(self, pitch: PitchEstimate, tuning_open_hz: float) -> GuidedTuningUpdate:
         target = self.target_frequency(tuning_open_hz)
         def result(status, measured=None, cents=None):
             return GuidedTuningUpdate(self.string_number, self.stage, target, measured, cents, status)
-        if target is None:
-            self._recent.clear()
-            return result("missing_open_reference")
         if (not math.isfinite(pitch.frequency_hz) or pitch.frequency_hz <= 0
                 or not math.isfinite(pitch.timestamp) or not math.isfinite(pitch.confidence)
                 or pitch.confidence < 0.65):

@@ -12,6 +12,8 @@ from pathlib import Path
 from app import (
     App,
     DEFAULT_DIFFICULTY_PERCENT,
+    DEFAULT_GAME,
+    DEFAULT_REVIEW,
     PENDING_MOVE_QUEUE_PATH,
     _validate_worker_result,
     favorite_scan_allows_automatic_move,
@@ -44,6 +46,80 @@ class WorkerResultTests(unittest.TestCase):
         self.assertIn('ttk.Separator(practice, orient="horizontal")', source)
         self.assertIn("Undo last completed removal", source)
         self.assertIn("WARNING: Queueing moves each checked PSARC", source)
+
+    def test_default_do_not_want_folder_is_next_to_the_configured_game(self) -> None:
+        self.assertEqual(DEFAULT_GAME / "DoNotWantSongs", DEFAULT_REVIEW)
+
+    def test_game_path_change_moves_only_default_do_not_want_path(self) -> None:
+        class Value:
+            def __init__(self, value):
+                self.value = str(value)
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = str(value)
+
+        app = App.__new__(App)
+        app._review_path_is_default = True
+        app._setting_default_review_path = False
+        app.game_var = Value(Path("C:/Steam/Rocksmith2014"))
+        app.review_var = Value(Path("C:/Old/Rocksmith2014/DoNotWantSongs"))
+        app._invalidate_library_scan = mock.Mock()
+
+        App._game_path_changed(app)
+
+        self.assertEqual(Path("C:/Steam/Rocksmith2014/DoNotWantSongs"), Path(app.review_var.get()))
+        self.assertTrue(app._review_path_is_default)
+        self.assertFalse(app._setting_default_review_path)
+
+    def test_manual_do_not_want_path_stops_following_game_folder(self) -> None:
+        class Value:
+            def __init__(self, value):
+                self.value = str(value)
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = str(value)
+
+        app = App.__new__(App)
+        app._review_path_is_default = True
+        app._setting_default_review_path = False
+        app.review_var = Value(Path("D:/MyBackups/DoNotWant"))
+        app._invalidate_library_scan = mock.Mock()
+        App._review_path_changed(app)
+        self.assertFalse(app._review_path_is_default)
+
+        app.game_var = Value(Path("C:/Steam/Rocksmith2014"))
+        App._game_path_changed(app)
+        self.assertEqual(Path("D:/MyBackups/DoNotWant"), Path(app.review_var.get()))
+
+    def test_tuner_preferences_are_in_tuner_with_plain_restart_wording(self) -> None:
+        from intonation_checker import IntonationCheckerWindow
+
+        setup_source = inspect.getsource(App._build)
+        tuner_source = inspect.getsource(IntonationCheckerWindow._build)
+        self.assertNotIn("First Song Tuning Preferences", setup_source)
+        self.assertIn("First Song Tuning Preferences", tuner_source)
+        self.assertIn("Do you want to tune once every time you start the game?", tuner_source)
+        self.assertIn("later songs do not show another tuner until you restart Rocksmith", tuner_source)
+        self.assertNotIn("later songs still show the tuner", tuner_source)
+
+    def test_pack_song_editor_has_checkboxes_and_select_all_controls(self) -> None:
+        source = inspect.getsource(App._edit_song_practice)
+        self.assertIn('columns=("selected", "artist", "song", "speed")', source)
+        self.assertIn('text="Select all songs"', source)
+        self.assertIn('text="Clear selection"', source)
+        self.assertIn('"☑" if checkbox_selection.contains(index) else "☐"', source)
+
+    def test_move_warning_says_verified_nonfavorites_leave_the_game_list(self) -> None:
+        source = inspect.getsource(App._confirm_archive_moves)
+        self.assertIn("leave active Rocksmith DLC and move to the Do Not Want folder", source)
+        self.assertIn("Their songs disappear from Rocksmith until restored", source)
+        self.assertIn("Files are not permanently deleted", source)
 
     def test_uncheck_favorite_archives_clears_only_verified_favorites(self) -> None:
         with tempfile.TemporaryDirectory() as folder:
