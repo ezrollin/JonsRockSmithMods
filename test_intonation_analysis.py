@@ -8,6 +8,7 @@ from intonation_analysis import (
     cents_difference,
     cents_position,
     CUSTOM_TUNING,
+    TUNING_PRESETS,
     expected_tuning_frequency,
     estimate_pitch,
     expected_frequency,
@@ -17,6 +18,7 @@ from intonation_analysis import (
     pitch_band,
     pitch_state,
     tuner_adjustment,
+    tuning_reference_rows,
     tuning_notes_for,
 )
 
@@ -24,6 +26,22 @@ from intonation_analysis import (
 class IntonationAnalysisTests(unittest.TestCase):
     sample_rate = 48_000
     sample_count = 8192
+
+    def test_reference_table_covers_all_strings_and_matches_requested_standard_frequencies(self):
+        rows = tuning_reference_rows("E Standard")
+        self.assertEqual(6, len(rows))
+        self.assertEqual((6, "E2"), rows[0][:2])
+        self.assertAlmostEqual(82.41, rows[0][2], places=2)
+        self.assertAlmostEqual(164.81, rows[0][3], places=2)
+        self.assertEqual((5, "A2"), rows[1][:2])
+        self.assertAlmostEqual(110.00, rows[1][2], places=2)
+        self.assertAlmostEqual(220.00, rows[1][3], places=2)
+        for preset in TUNING_PRESETS:
+            with self.subTest(preset=preset):
+                rows = tuning_reference_rows(preset)
+                self.assertEqual(tuple(range(6, 0, -1)), tuple(row[0] for row in rows))
+                for _, _, open_hz, fret12_hz in rows:
+                    self.assertAlmostEqual(open_hz * 2, fret12_hz)
 
     def tone(self, frequency, *, noise=0.0, clipped=False):
         sample_times = np.arange(self.sample_count, dtype=np.float64) / self.sample_rate

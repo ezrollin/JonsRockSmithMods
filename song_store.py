@@ -178,7 +178,11 @@ class SongStore:
             count += 1
         return count
 
-    def restore(self, relative_paths: list[str]) -> int:
+    def restore(
+        self,
+        relative_paths: list[str],
+        expected_identities: dict[str, FileIdentity] | None = None,
+    ) -> int:
         self._assert_game_closed()
         data = self._read_manifest()
         count = 0
@@ -189,6 +193,9 @@ class SongStore:
             target = self.dlc_root / rel
             if key not in data["songs"] or not source.is_file() or source.is_symlink() or not _inside(source, self.songs_root):
                 raise StoreError(f"Reviewed song missing or unsafe: {key}")
+            expected = (expected_identities or {}).get(key)
+            if expected is not None and _file_identity(source) != expected:
+                raise StoreError(f"Reviewed song changed since removal; no restore made for: {key}")
             if target.exists():
                 raise StoreError(f"Game destination occupied: {key}")
             target.parent.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import inspect
 from unittest import mock
 from pathlib import Path
 
@@ -31,6 +32,14 @@ class WorkerResultTests(unittest.TestCase):
     def test_app_unconfigured_defaults_are_level_5_and_85_percent_speed(self) -> None:
         self.assertEqual(DEFAULT_DIFFICULTY_PERCENT, 50)
         self.assertEqual(DEFAULT_SPEED_PERCENT, 85)
+
+    def test_difficulty_tab_has_no_inactive_individual_song_editor(self) -> None:
+        source = inspect.getsource(App._build)
+        self.assertNotIn('text="Individual songs"', source)
+        self.assertNotIn('text="Edit selected songs"', source)
+        self.assertIn("Edit difficulty / speed for selected pack songs", source)
+        self.assertIn("Undo last completed removal", source)
+        self.assertIn("WARNING: Queueing moves each checked PSARC", source)
 
     def test_missing_profile_gets_clear_browse_guidance_without_profile_write(self) -> None:
         class Value:

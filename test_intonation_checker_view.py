@@ -14,6 +14,9 @@ from intonation_analysis import (
     cents_difference,
     frequency_for_note,
     note_for_frequency,
+    TUNER_COLOR_RED,
+    TUNER_COLOR_AMBER,
+    TUNER_COLOR_GREEN,
 )
 from intonation_checker import (
     DEFAULT_TUNING_LABEL,
@@ -238,10 +241,55 @@ class _FakeScrollablePage(_FakeWidget):
         self.content = _FakeWidget(self)
 
 
+class _FakeTreeview(_FakeWidget):
+    def heading(self, *_args, **_kwargs):
+        return None
+
+    def column(self, *_args, **_kwargs):
+        return None
+
+    def get_children(self, *_args):
+        return []
+
+    def insert(self, *_args, **_kwargs):
+        return "row"
+
+
 class TunerViewTests(unittest.TestCase):
     def test_window_size_is_screen_bounded_for_small_displays(self):
         self.assertEqual(tuner_window_size(800, 600), (740, 520))
         self.assertEqual(tuner_window_size(500, 400), (440, 320))
+
+    def test_reference_table_shows_all_six_open_and_octave_frequencies_for_selected_tuning(self):
+        checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
+        checker.reference_table = Mock()
+        checker.reference_table.get_children.return_value = []
+        checker._tuning_name = Mock(return_value="E Standard")
+        checker._refresh_reference_table()
+        rows = [call.kwargs["values"][1:] for call in checker.reference_table.insert.call_args_list]
+        self.assertEqual(6, len(rows))
+        self.assertEqual(("E2", "82.41", "164.81"), rows[0])
+        self.assertEqual(("A2", "110.00", "220.00"), rows[1])
+        checker.reference_table.insert.reset_mock()
+        checker.reference_table.get_children.return_value = []
+        checker._tuning_name.return_value = "Drop D"
+        checker._refresh_reference_table()
+        self.assertEqual("D2", checker.reference_table.insert.call_args_list[0].kwargs["values"][1])
+
+    def test_live_meter_draws_red_amber_green_distance_bands_and_pitch_marker(self):
+        checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
+        checker.tuner_canvas = Mock()
+        checker.tuner_canvas.winfo_exists.return_value = True
+        checker.tuner_canvas.winfo_width.return_value = 700
+        checker._live_comparison = Mock(return_value={
+            "band": "red", "string": "String 6 - lowest", "stage": "open",
+            "pitch": None, "state": "SHARP", "cents": 22.0, "measured": 83.46, "target": 82.41,
+        })
+        checker._draw_tuner()
+        fills = [call.kwargs["fill"] for call in checker.tuner_canvas.create_rectangle.call_args_list]
+        self.assertEqual([TUNER_COLOR_RED, TUNER_COLOR_AMBER, TUNER_COLOR_GREEN,
+                          TUNER_COLOR_AMBER, TUNER_COLOR_RED], fills)
+        checker.tuner_canvas.create_polygon.assert_called_once()
 
     def make_checker(self, *, string_number=6, tuning="E Standard", stage="open"):
         checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
@@ -429,6 +477,7 @@ class TunerViewTests(unittest.TestCase):
             "intonation_checker.ttk.Button": _FakeWidget,
             "intonation_checker.ttk.Radiobutton": _FakeWidget,
             "intonation_checker.ttk.Spinbox": _FakeWidget,
+            "intonation_checker.ttk.Treeview": _FakeTreeview,
             "intonation_checker.tk.Canvas": _FakeWidget,
             "intonation_checker.ScrollablePage": _FakeScrollablePage,
         }

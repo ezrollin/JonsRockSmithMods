@@ -22,7 +22,7 @@ The executable or app.py must be directly inside that JonsRockSmithMods folder, 
 - Python: `Setup Python.bat` once, then `Run Python.bat`.
 - `Launch JonsRockSmithMods.bat` offers both choices explicitly.
 
-On Setup & startup, confirm running version **0.21.0**, mode and path. File Properties > Details also shows EXE version 0.21.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
+On Setup & startup, confirm running version **0.22.0**, mode and path. File Properties > Details also shows EXE version 0.22.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
 
 ## 4. Check file links before use
 
@@ -37,11 +37,17 @@ Run Full refresh. If paths are wrong, change them in the GUI and refresh again. 
 
 ## 5. In-game removal
 
-Manual workflow needs no native add-on: select/check archives in the companion, Queue checked until game closes, review confirmation, then close Rocksmith and leave/reopen the companion. Removal is reversible.
+Manual workflow needs no native add-on: select/check archives in the companion, read the warning and typed confirmation, then choose Queue checked until game closes. Whole archives move reversibly from active DLC into Do Not Want after Rocksmith exits; they are not permanently deleted. Use **Undo queued removals** before processing, or **Undo last completed removal** afterward (the last batch remains available after app restart). Undo verifies paths and file identities and requires Rocksmith closed. Existing Restore selected archives still restores any selected Do Not Want files.
+
+To remove a track from a multi-song pack, use **Split up whole song pack** and replace the complete pack with verified single-song files. Then check only individual song archives you want moved to Do Not Want and queue them. The complete pack must be split so unselected tracks are not lost.
 
 In-game F10 requires the optional compatible Jons native extension, installed while Rocksmith is closed and loaded after restart. Its new overlay shows the configured key in menus and saved/error feedback. In Learn a Song, enable previews, wait for the desired preview and press F10. Return to the song list to mark a song; performance identity is not verified. A whole pack moves as a unit. After game exit review the exact archive and type QUEUE. These are marks for review, not immediate deletion.
 
 The modified upstream native DLL is intentionally omitted from public downloads because no upstream redistribution license was found. Developer source/patch build instructions are in native/README.md in the repository. Do not download unknown replacement DLLs or overwrite an incompatible version. No public download silently installs a native module.
+
+In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice open pitch). E Standard low E2 is 82.41/164.81 Hz; A2 is 110.00/220.00 Hz. Personal cents offsets can change the live open target. The live meter marks red for farther out, amber for near, and green within the in-tune range.
+
+In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice open pitch). Personal cents offsets can change the live open target. The live meter marks red for farther out, amber for near, and green within the in-tune range.
 
 ## 6. Common errors
 

@@ -53,8 +53,10 @@ from pending_moves import (
     PendingMoveResult,
     cancel_pending_moves,
     load_pending_moves,
+    load_last_completed_moves,
     process_pending_moves,
     queue_song_moves,
+    undo_last_completed_moves,
 )
 from song_store import SongFile, SongStore, StoreError, game_is_running, normalize_review_root
 from song_table import context_actions, context_selection, next_sort_state, song_sort_key
@@ -71,13 +73,14 @@ from startup_config import read_startup_config, write_startup_config
 from ui_layout import ScrollablePage, initial_window_size
 
 
-APP_VERSION = "0.21.0"
+APP_VERSION = "0.22.0"
 DEFAULT_DIFFICULTY_PERCENT = 50
 DEFAULT_GAME = next((parent for parent in Path(__file__).resolve().parents if (parent / "Rocksmith2014.exe").is_file()), Path(r"C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014"))
 DEFAULT_REVIEW = Path.home() / "Documents" / "JonsRockSmithMods" / "DoNotWant"
 LOG_PATH = Path.home() / "Documents" / "JonsRockSmithMods" / "JonsRockSmithMods.log"
 METADATA_PATH = LOG_PATH.with_name("metadata_cache.json")
 PENDING_MOVE_QUEUE_PATH = LOG_PATH.with_name("pending_song_moves.json")
+LAST_COMPLETED_MOVE_PATH = LOG_PATH.with_name("last_completed_song_removal.json")
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=LOG_PATH, level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(message)s")
@@ -199,6 +202,8 @@ def _validate_worker_result(description: str, result) -> None:
         raise StoreError("In-game song removal returned an invalid archive count")
     if description == "Processing queued song removals" and not isinstance(result, PendingMoveResult):
         raise StoreError("Queued-removal worker returned an invalid result")
+    if description == "Undoing last completed removal" and not isinstance(result, PendingMoveResult):
+        raise StoreError("Removal undo returned an invalid result")
 
 
 def favorite_scan_allows_automatic_move(rows, favorites, states, scanned_signature, current_signature) -> bool:
@@ -303,6 +308,7 @@ class App(tk.Tk):
         self.pending_move_check_active = False
         self.pending_move_retry_paused = False
         self.pending_move_check_error: str | None = None
+        self.undo_last_removal_button = None
         self.active_game_song_request: InGameSongRequest | None = None
         self.game_song_request_error: str | None = None
         self.deferred_game_song_requests: set[str] = set()
@@ -426,22 +432,32 @@ class App(tk.Tk):
         action(remove, "queue_checked_button", "Queue checked until game closes", self._queue_checked_after_close, 1, 1)
         action(remove, "restore_button", "Restore selected archives", self._restore, 2)
         action(remove, "move_nonfavorites_button", "Move verified non-favorites", self._move_nonfavorites, 2, 1)
-        action(remove, "cancel_queued_moves_button", "Cancel queued removals", self._cancel_queued_moves, 3)
+        action(remove, "cancel_queued_moves_button", "Undo queued removals", self._cancel_queued_moves, 3)
         action(remove, "retry_queued_moves_button", "Retry queued removals", self._retry_queued_moves, 3, 1)
-        action(remove, "review_marks_button", "Review saved in-game marks", self._review_saved_game_marks, 4)
-        action(remove, "forget_marks_button", "Forget saved in-game marks", self._forget_saved_game_marks, 4, 1)
+        action(remove, "undo_last_removal_button", "Undo last completed removal", self._undo_last_completed_removal, 4)
+        action(remove, "review_marks_button", "Review saved in-game marks", self._review_saved_game_marks, 5)
+        action(remove, "forget_marks_button", "Forget saved in-game marks", self._forget_saved_game_marks, 5, 1)
         self.pending_moves_status_var = tk.StringVar(value="No queued removals.")
         ttk.Label(remove, textvariable=self.pending_moves_status_var, wraplength=700).grid(
-            row=5, column=0, columnspan=2, sticky="ew", pady=4)
+            row=6, column=0, columnspan=2, sticky="ew", pady=4)
         ttk.Label(remove, text="In the song list, let the selected song preview start, then press F10 to save a removal mark. "
                   "Keep browsing; review happens after Rocksmith exits. Marks survive app exit. Reopen this app "
                   "to finish removals. A pack moves as one whole file; split it first for individual songs.",
-                  wraplength=700).grid(row=6, column=0, columnspan=2, sticky="ew")
+                  wraplength=700).grid(row=7, column=0, columnspan=2, sticky="ew")
 
-        action(remove, "in_game_help_button", "In-game removal: setup and controls", self._show_in_game_removal_help, 7)
+        ttk.Label(remove, text=(
+            "WARNING: Queueing moves each checked PSARC out of active DLC into Do Not Want after Rocksmith closes. "
+            "It is not permanently deleted. A song pack moves as one archive unless you split it first. "
+            "Use Split up whole song pack to replace the complete pack with individual song files, then check "
+            "only the individual songs you want moved. "
+            "Undo queued removals before they run, or use Undo last completed removal afterward."
+        ), foreground="#9b1c1c", wraplength=700, justify="left").grid(
+            row=8, column=0, columnspan=2, sticky="ew", pady=(8, 2)
+        )
+        action(remove, "in_game_help_button", "In-game removal: setup and controls", self._show_in_game_removal_help, 9)
 
         action(packs, "split_pack_button", "Split up whole song pack", self._split_pack_selected, 0)
-        practice_button = ttk.Button(packs, text="Edit individual song difficulty / speed", command=self._edit_song_practice)
+        practice_button = ttk.Button(packs, text="Edit difficulty / speed for selected pack songs", command=self._edit_song_practice)
         practice_button.grid(row=0, column=1, sticky="ew", padx=3, pady=3)
         self.operation_buttons.append(practice_button)
         action(packs, "preview_button", "Preview selected archive (30 sec)", self._preview_selected, 1)
@@ -487,14 +503,6 @@ class App(tk.Tk):
             row=3, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Label(difficulty, text="Close Rocksmith before changing saved difficulty. A verified profile backup is made first. "
                   "Restart the game to load changes.", wraplength=700).grid(row=4, column=0, columnspan=2, sticky="ew")
-        individual = ttk.LabelFrame(practice, text="Individual songs", padding=10)
-        individual.pack(fill="x", pady=(0, 12))
-        ttk.Label(individual, text="Select an archive in Songs, then choose the exact song here. "
-                  "A song pack can contain many songs; you can choose one or several.", wraplength=700).pack(anchor="w")
-        button = ttk.Button(individual, text="Edit selected songs", command=self._edit_song_practice)
-        button.pack(anchor="w", pady=8)
-        self.operation_buttons.append(button)
-
         speed = ttk.LabelFrame(practice, text="Default speed for songs without an override", padding=10)
         speed.pack(fill="x")
         ttk.Checkbutton(speed, text="Enable default speed for every song", variable=self.speed_enabled_var).grid(
@@ -2044,6 +2052,44 @@ class App(tk.Tk):
         self.pending_moves_status_var.set("Retrying queued removals; Rocksmith must be closed.")
         self._process_pending_move_queue()
 
+    def _undo_last_completed_removal(self) -> None:
+        if self.busy:
+            return
+        try:
+            items = load_last_completed_moves(LAST_COMPLETED_MOVE_PATH)
+        except StoreError as exc:
+            messagebox.showerror("Undo last removal", f"Undo history could not be verified. No files changed.\n\n{exc}")
+            return
+        if not items:
+            messagebox.showinfo(
+                "Undo last removal",
+                "No completed queued removal is available. Use Undo queued removals before queued files move, "
+                "or select a Do Not Want archive and choose Restore selected archives.",
+            )
+            return
+        names = "\n".join(f"- {item.relative_path}" for item in items[:12])
+        if len(items) > 12:
+            names += f"\n...and {len(items) - 12} more archive(s)"
+        if not messagebox.askyesno(
+            "Undo last completed removal",
+            f"Restore {len(items)} archive(s) from Do Not Want to active DLC?\n\n{names}\n\n"
+            "Rocksmith must be closed. Undo verifies each archive has not changed. Nothing is deleted.",
+        ):
+            return
+
+        game_root = Path(self.game_var.get()).expanduser()
+        review_root = Path(self.review_var.get()).expanduser()
+
+        def worker() -> PendingMoveResult:
+            store = SongStore(game_root, review_root, game_is_running)
+            result = undo_last_completed_moves(LAST_COMPLETED_MOVE_PATH, store)
+            for source, target in result.moved_paths:
+                self.metadata.relocate(source, target, save=False)
+            self.metadata.save()
+            return result
+
+        self._run("Undoing last completed removal", worker)
+
     def _poll(self) -> None:
         try:
             while True:
@@ -2310,7 +2356,17 @@ class App(tk.Tk):
                     )
                     self.status_var.set(
                         f"Moved {result.moved_count} archive(s) to Do Not Want after Rocksmith closed. "
-                        f"{result.completed_count} queue item(s) completed; nothing was deleted."
+                        f"{result.completed_count} queue item(s) completed; nothing was deleted. Use Undo last completed removal to restore this batch."
+                    )
+                    self.refresh()
+                elif description == "Undoing last completed removal":
+                    if not isinstance(result, PendingMoveResult):
+                        raise StoreError("Removal undo returned an invalid result")
+                    self.pending_moves_status_var.set(
+                        f"Undo complete: restored {result.moved_count} archive(s) to active DLC."
+                    )
+                    self.status_var.set(
+                        f"Restored {result.moved_count} archive(s) to active DLC. No archives were deleted."
                     )
                     self.refresh()
                 elif description == "Canceling queued song removals":
@@ -2694,8 +2750,8 @@ class App(tk.Tk):
         dialog.columnconfigure(0, weight=1)
         dialog.rowconfigure(1, weight=1)
         operation_note = (
-            "No archive moves now. Queue persists across app restarts and processes only after Rocksmith closes. "
-            "Moving is reversible through Restore; no archive is deleted."
+            "WARNING: Each listed PSARC leaves active DLC and moves to Do Not Want only after Rocksmith closes. "
+            "No archive is permanently deleted. Undo the queue before it runs, or use Undo last completed removal afterward."
             if queue_after_close else
             "Moving is reversible through Restore; no song archive is deleted. Close Rocksmith before continuing."
         )

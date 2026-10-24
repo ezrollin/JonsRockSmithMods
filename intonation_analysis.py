@@ -374,6 +374,16 @@ def expected_tuning_frequency(
     return frequency_for_note(notes[6 - string_number])
 
 
+def tuning_reference_rows(preset_name: str) -> tuple[tuple[int, str, float, float], ...]:
+    """Return string number, open note/Hz, and 12th-fret Hz for selected preset."""
+    notes = tuning_notes_for(preset_name, TUNING_PRESETS.get(preset_name))
+    return tuple(
+        (number, notes[6 - number], frequency_for_note(notes[6 - number]),
+         frequency_for_note(notes[6 - number]) * 2.0)
+        for number in range(6, 0, -1)
+    )
+
+
 def cents_difference(actual_hz: float, target_hz: float) -> float:
     """Return signed cents from target to actual; positive means actual is sharp."""
 

@@ -9,8 +9,10 @@ from pathlib import Path
 from pending_moves import (
     cancel_pending_moves,
     load_pending_moves,
+    load_last_completed_moves,
     process_pending_moves,
     queue_song_moves,
+    undo_last_completed_moves,
 )
 from song_store import SongStore, StoreError
 
@@ -23,6 +25,7 @@ class PendingMoveTests(unittest.TestCase):
         self.game = root / "game"
         self.review = root / "review"
         self.queue_path = root / "user-data" / "pending_moves.json"
+        self.undo_path = root / "user-data" / "last_completed_song_removal.json"
         (self.game / "dlc" / "artist").mkdir(parents=True)
         (self.game / "Rocksmith2014.exe").write_bytes(b"test executable")
         (self.game / "dlc" / "artist" / "song_p.psarc").write_bytes(b"original archive")
@@ -54,8 +57,38 @@ class PendingMoveTests(unittest.TestCase):
         self.assertEqual(b"multi-song pack", target.read_bytes())
         self.assertFalse(row.path.exists())
         self.assertEqual([], load_pending_moves(self.queue_path))
-        self.assertEqual(1, self.store.restore([row.relative_path]))
+        self.assertEqual(1, result.moved_count)
+        self.assertEqual(1, len(load_last_completed_moves(self.undo_path)))
+        archived_row = next(r for r in self.store.inventory() if r.relative_path == row.relative_path)
+        self.assertEqual(archived_row.identity, load_last_completed_moves(self.undo_path)[0].identity)
+        undo = undo_last_completed_moves(self.undo_path, self.store)
+        self.assertEqual(1, undo.moved_count)
+        self.assertFalse(self.undo_path.exists())
         self.assertEqual(b"multi-song pack", row.path.read_bytes())
+
+    def test_undo_refuses_changed_archive_and_keeps_undo_record(self) -> None:
+        row = self._row("artist/song_p.psarc")
+        queue_song_moves(self.queue_path, self.store, [row])
+        process_pending_moves(self.queue_path, running_check=lambda: False)
+        archived = self.review / "songs" / row.relative_path
+        archived.write_bytes(b"changed after move")
+
+        with self.assertRaisesRegex(StoreError, "missing or changed"):
+            undo_last_completed_moves(self.undo_path, self.store)
+
+        self.assertTrue(self.undo_path.exists())
+        self.assertFalse(row.path.exists())
+
+    def test_undo_refuses_when_active_destination_already_exists(self) -> None:
+        row = self._row("artist/song_p.psarc")
+        queue_song_moves(self.queue_path, self.store, [row])
+        process_pending_moves(self.queue_path, running_check=lambda: False)
+        row.path.write_bytes(b"independent active copy")
+
+        with self.assertRaisesRegex(StoreError, "destination already exists"):
+            undo_last_completed_moves(self.undo_path, self.store)
+
+        self.assertTrue((self.review / "songs" / row.relative_path).exists())
 
     def test_changed_archive_stays_in_game_and_request_stays_queued(self) -> None:
         row = self._row("artist/song_p.psarc")

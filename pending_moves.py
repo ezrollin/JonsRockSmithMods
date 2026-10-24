@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from song_store import FileIdentity, SongFile, SongStore, StoreError, game_is_running
+from song_store import FileIdentity, SongFile, SongStore, StoreError, _file_identity, game_is_running
 
 
 QUEUE_VERSION = 1
@@ -32,6 +32,7 @@ class PendingMoveResult:
     completed_count: int
     remaining_count: int
     moved_paths: tuple[tuple[Path, Path], ...]
+    moved_items: tuple[PendingMove, ...] = ()
 
     @property
     def moved_count(self) -> int:
@@ -157,6 +158,7 @@ def process_pending_moves(
 
     remaining = list(items)
     moved_paths: list[tuple[Path, Path]] = []
+    moved_items: list[PendingMove] = []
     completed = 0
     store_cache: dict[tuple[str, str], tuple[SongStore, dict[str, SongFile]]] = {}
     for item in items:
@@ -190,16 +192,124 @@ def process_pending_moves(
                 expected_identities={item.relative_path: item.identity},
             )
             moved_paths.append((source, target))
+            # shutil.move may copy across volumes, assigning a new file ID.
+            # Undo must pin identity of the archived copy, not pre-move source.
+            moved_items.append(PendingMove(
+                item.game_root, item.review_root, item.relative_path,
+                _file_identity(target), item.queued_at,
+            ))
             rows_by_path[item.relative_path] = SongFile(
                 item.relative_path, target, row.size, "Do Not Want", row.identity
             )
         elif row.location != "Do Not Want":
             raise StoreError(f"Queued archive has an unsupported location: {item.relative_path}")
 
+        if row.location == "Active":
+            # Commit undo record after archive move, before dropping queue item.
+            save_last_completed_moves(path.with_name("last_completed_song_removal.json"), moved_items)
         remaining.remove(item)
         _write_pending_moves(path, remaining)
         completed += 1
-    return PendingMoveResult(completed, len(remaining), tuple(moved_paths))
+    return PendingMoveResult(completed, len(remaining), tuple(moved_paths), tuple(moved_items))
+
+
+def save_last_completed_moves(history_path: str | Path, items: list[PendingMove] | tuple[PendingMove, ...]) -> int:
+    """Persist most recent completed reversible archive batch for one-click undo."""
+    path = Path(history_path)
+    unique: dict[tuple[str, str, str], PendingMove] = {}
+    for item in items:
+        unique[_move_key(item)] = item
+    if not unique or len(unique) > MAX_QUEUE_ITEMS:
+        raise StoreError("Completed removal history is empty or exceeds its limit")
+    document = {
+        "version": QUEUE_VERSION,
+        "items": [
+            {"game_root": item.game_root, "review_root": item.review_root,
+             "relative_path": item.relative_path, "identity": list(item.identity),
+             "queued_at": item.queued_at}
+            for item in unique.values()
+        ],
+    }
+    _atomic_json_write(path, document, "completed-removal undo")
+    return len(unique)
+
+
+def load_last_completed_moves(history_path: str | Path) -> list[PendingMove]:
+    path = Path(history_path)
+    if not path.exists():
+        return []
+    try:
+        if path.is_symlink() or path.stat().st_size > MAX_QUEUE_BYTES:
+            raise StoreError("Completed-removal undo file is unsafe or too large")
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except StoreError:
+        raise
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StoreError(f"Cannot read completed-removal undo: {exc}") from exc
+    if (not isinstance(document, dict) or document.get("version") != QUEUE_VERSION
+            or type(document.get("version")) is not int or not isinstance(document.get("items"), list)
+            or len(document["items"]) > MAX_QUEUE_ITEMS):
+        raise StoreError("Completed-removal undo format is unsupported")
+    result = []
+    seen = set()
+    for index, raw in enumerate(document["items"]):
+        if not isinstance(raw, dict):
+            raise StoreError(f"Completed-removal undo entry {index + 1} is invalid")
+        game_root = _absolute_root(raw.get("game_root"), "game")
+        review_root = _absolute_root(raw.get("review_root"), "Do Not Want")
+        relative = _safe_relative_archive(raw.get("relative_path"))
+        identity = raw.get("identity")
+        queued_at = raw.get("queued_at")
+        if (not isinstance(identity, list) or len(identity) != 4
+                or any(type(part) is not int or part < 0 for part in identity)
+                or not isinstance(queued_at, str)):
+            raise StoreError(f"Completed-removal undo entry {index + 1} is invalid")
+        try:
+            datetime.fromisoformat(queued_at)
+        except ValueError as exc:
+            raise StoreError(f"Completed-removal undo timestamp is invalid for {relative}") from exc
+        item = PendingMove(game_root, review_root, relative, tuple(identity), queued_at)
+        if _move_key(item) in seen:
+            raise StoreError(f"Duplicate completed-removal undo archive: {relative}")
+        seen.add(_move_key(item))
+        result.append(item)
+    return result
+
+
+def undo_last_completed_moves(history_path: str | Path, store: SongStore) -> PendingMoveResult:
+    """Restore latest moved batch only if roots and each archived file identity match."""
+    history = load_last_completed_moves(history_path)
+    if not history:
+        raise StoreError("No completed removal is available to undo")
+    expected_game = str(store.game_root)
+    expected_review = str(store.review_root)
+    if any(os.path.normcase(item.game_root) != os.path.normcase(expected_game)
+           or os.path.normcase(item.review_root) != os.path.normcase(expected_review) for item in history):
+        raise StoreError("Undo blocked: configured Rocksmith or Do Not Want folder differs from the removal")
+    current = {row.relative_path: row for row in store.inventory() if row.location == "Do Not Want"}
+    for item in history:
+        row = current.get(item.relative_path)
+        if row is None or row.identity != item.identity:
+            raise StoreError(f"Undo blocked: archived file is missing or changed: {item.relative_path}")
+        if (store.dlc_root / item.relative_path).exists():
+            raise StoreError(f"Undo blocked: active DLC destination already exists: {item.relative_path}")
+    moved_paths = tuple(
+        (store.songs_root / item.relative_path, store.dlc_root / item.relative_path)
+        for item in history
+    )
+    restored = store.restore(
+        [item.relative_path for item in history],
+        {item.relative_path: item.identity for item in history},
+    )
+    if restored != len(history):
+        raise StoreError("Undo restored an unexpected number of archives")
+    try:
+        Path(history_path).unlink(missing_ok=True)
+    except OSError as exc:
+        raise StoreError(
+            f"Archives were restored, but undo history could not be cleared. Refresh library before another undo: {exc}"
+        ) from exc
+    return PendingMoveResult(restored, 0, moved_paths)
 
 
 def _absolute_root(value: object, label: str) -> str:
@@ -258,9 +368,15 @@ def _write_pending_moves(queue_path: str | Path, items: list[PendingMove]) -> No
             for item in items
         ],
     }
-    descriptor, temporary = tempfile.mkstemp(
-        prefix=".pending-moves-", suffix=".tmp", dir=path.parent
-    )
+    _atomic_json_write(path, document, "queued removals")
+
+
+def _atomic_json_write(path: Path, document: dict, label: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise StoreError(f"Could not create {label} folder: {exc}") from exc
+    descriptor, temporary = tempfile.mkstemp(prefix=".song-moves-", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(document, stream, indent=2, sort_keys=True)
@@ -268,7 +384,7 @@ def _write_pending_moves(queue_path: str | Path, items: list[PendingMove]) -> No
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     except OSError as exc:
-        raise StoreError(f"Could not save queued removals: {exc}") from exc
+        raise StoreError(f"Could not save {label}: {exc}") from exc
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)

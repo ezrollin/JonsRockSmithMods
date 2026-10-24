@@ -5,7 +5,7 @@ import math
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
-from intonation_analysis import DEFAULT_TUNING, TUNING_PRESETS, ManualIntonationSession, PitchEstimate, cents_difference, cents_position, frequency_for_note, note_for_frequency, pitch_band, pitch_state, tuner_adjustment, TUNER_COLOR_AMBER, TUNER_COLOR_GREEN, TUNER_COLOR_NEUTRAL, TUNER_COLOR_RED
+from intonation_analysis import DEFAULT_TUNING, TUNING_PRESETS, ManualIntonationSession, PitchEstimate, cents_difference, cents_position, frequency_for_note, note_for_frequency, pitch_band, pitch_state, tuner_adjustment, tuning_reference_rows, TUNER_COLOR_AMBER, TUNER_COLOR_GREEN, TUNER_COLOR_NEUTRAL, TUNER_COLOR_RED
 from tuner_settings import default_settings, load_tuner_settings, save_tuner_settings
 from ui_layout import ScrollablePage
 from waveform_input import AudioInputDevice, WaveformPitchInput, enumerate_input_devices, preferred_guitar_device
@@ -62,6 +62,7 @@ class IntonationCheckerWindow:
         self.instruction_var = tk.StringVar(value='')
         self.live_detail_var = tk.StringVar(value='Choose the string and OPEN or FRET 12. The app never switches them automatically.')
         self.preference_status_var = tk.StringVar(value=self.settings_error)
+        self.reference_table = None
         self._load_reference_offsets()
         self._build()
         self._update_instruction()
@@ -99,20 +100,37 @@ class IntonationCheckerWindow:
         stages.grid(row=3, column=0, columnspan=3, sticky='ew', pady=8)
         ttk.Radiobutton(stages, text='OPEN string', value='open', variable=self.stage_var, command=self._selection_changed).pack(side='left', padx=(0, 16))
         ttk.Radiobutton(stages, text='FRET 12 (press the string)', value='fret12', variable=self.stage_var, command=self._selection_changed).pack(side='left')
+        chart = ttk.LabelFrame(root, text='Nominal A440 reference frequencies for all strings in selected tuning', padding=8)
+        chart.grid(row=2, column=0, sticky='ew', pady=(0, 8))
+        chart.columnconfigure(0, weight=1)
+        self.reference_table = ttk.Treeview(
+            chart, columns=('string', 'open', 'open_hz', 'fret12_hz'),
+            show='headings', height=6
+        )
+        for key, title, width in (
+            ('string', 'String', 130), ('open', 'Open note', 110),
+            ('open_hz', 'Open (Hz)', 130), ('fret12_hz', '12th fret (Hz)', 150),
+        ):
+            self.reference_table.heading(key, text=title)
+            self.reference_table.column(key, width=width, anchor='center', stretch=True)
+        self.reference_table.grid(row=0, column=0, sticky='ew')
+        self._refresh_reference_table()
+        ttk.Label(chart, text='12th fret is twice open-string frequency. Personal open-pitch offsets may change the live target.',
+                  wraplength=760).grid(row=1, column=0, sticky='w', pady=(4, 0))
         reference = ttk.LabelFrame(root, text='Personal open-pitch reference', padding=10)
-        reference.grid(row=2, column=0, sticky='ew', pady=8)
+        reference.grid(row=3, column=0, sticky='ew', pady=8)
         reference.columnconfigure(0, weight=1)
         ttk.Label(reference, text='Default 0 cents = A440 tuning. Negative is lower. For a game-accepted open pitch 20 cents lower, set -20 for this string. This is a preference, not verified game calibration.', wraplength=760).grid(row=0, column=0, columnspan=3, sticky='ew')
         ttk.Spinbox(reference, from_=-100, to=100, increment=1, textvariable=self.offset_var, width=7).grid(row=1, column=0, sticky='w', pady=6)
         ttk.Button(reference, text='Apply reference cents', command=self._apply_reference).grid(row=1, column=1, sticky='w', padx=6)
         ttk.Button(reference, text='Use this stable open pitch', command=self._use_open_reference).grid(row=2, column=0, columnspan=2, sticky='w')
         live = ttk.LabelFrame(root, text='Live reading - selected stage stays fixed', padding=10)
-        live.grid(row=3, column=0, sticky='ew')
-        self.tuner_canvas = tk.Canvas(live, height=270, background='#101923', highlightthickness=0, borderwidth=0)
+        live.grid(row=4, column=0, sticky='ew')
+        self.tuner_canvas = tk.Canvas(live, height=285, background='#101923', highlightthickness=0, borderwidth=0)
         self.tuner_canvas.pack(fill='x', expand=True)
         self.tuner_canvas.bind('<Configure>', self._draw_tuner)
         ttk.Label(live, textvariable=self.live_detail_var, wraplength=760).pack(anchor='w', pady=6)
-        for row, variable in ((4, self.instruction_var), (5, self.input_status_var), (6, self.preference_status_var)):
+        for row, variable in ((5, self.instruction_var), (6, self.input_status_var), (7, self.preference_status_var)):
             ttk.Label(root, textvariable=variable, wraplength=760, padding=(0, 4)).grid(row=row, column=0, sticky='ew')
         self.footer_frame = ttk.Frame(host, padding=(12, 7))
         self.footer_frame.grid(row=1, column=0, sticky='ew')
@@ -133,6 +151,16 @@ class IntonationCheckerWindow:
         note = TUNING_PRESETS[self._tuning_name()][6 - number]
         return (note, frequency_for_note(note))
 
+    def _refresh_reference_table(self):
+        if self.reference_table is None:
+            return
+        for item in self.reference_table.get_children(''):
+            self.reference_table.delete(item)
+        for number, note, open_hz, fret12_hz in tuning_reference_rows(self._tuning_name()):
+            self.reference_table.insert('', 'end', values=(
+                f'String {number}', note, f'{open_hz:.2f}', f'{fret12_hz:.2f}'
+            ))
+
     def _save_settings(self):
         try:
             save_tuner_settings(self.settings)
@@ -151,6 +179,7 @@ class IntonationCheckerWindow:
         self.flow.reset()
         self.settings['tuning'] = self._tuning_name()
         self._load_reference_offsets()
+        self._refresh_reference_table()
         self._save_settings()
         self._selection_changed()
 
@@ -396,10 +425,27 @@ class IntonationCheckerWindow:
         if reading['cents'] is not None:
             canvas.create_text(center, 124, text=f"{reading['measured']:.2f} Hz | {reading['cents']:+.1f} cents (+ sharp / - flat)", fill='#f3f6fa', font=('Segoe UI', 10))
         arrow, action = tuner_adjustment(reading['cents'], 5)
-        canvas.create_text(center, 164, text=arrow, fill=color, font=('Segoe UI', 38, 'bold'))
-        canvas.create_text(center, 204, text=action, fill=color, font=('Segoe UI', 12, 'bold'))
+        scale_left, scale_right = max(24, width * .12), min(width - 24, width * .88)
+        scale_width = max(1, scale_right - scale_left)
+        zones = ((-50, -15, TUNER_COLOR_RED), (-15, -5, TUNER_COLOR_AMBER),
+                 (-5, 5, TUNER_COLOR_GREEN), (5, 15, TUNER_COLOR_AMBER),
+                 (15, 50, TUNER_COLOR_RED))
+        for low, high, zone_color in zones:
+            left = scale_left + (low + 50) / 100 * scale_width
+            right = scale_left + (high + 50) / 100 * scale_width
+            canvas.create_rectangle(left, 137, right, 153, fill=zone_color, outline='')
+        canvas.create_line(center, 132, center, 158, fill='#f3f6fa', width=2)
+        if reading['cents'] is not None:
+            meter_x = scale_left + (max(-50, min(50, reading['cents'])) + 50) / 100 * scale_width
+            canvas.create_polygon(meter_x - 6, 130, meter_x + 6, 130, meter_x, 137,
+                                  fill=color, outline='#f3f6fa')
+        canvas.create_text(scale_left, 164, anchor='w', text='<< FLAT', fill=TUNER_COLOR_RED, font=('Segoe UI', 9, 'bold'))
+        canvas.create_text(center, 164, text='IN TUNE', fill=TUNER_COLOR_GREEN, font=('Segoe UI', 9, 'bold'))
+        canvas.create_text(scale_right, 164, anchor='e', text='SHARP >>', fill=TUNER_COLOR_RED, font=('Segoe UI', 9, 'bold'))
+        canvas.create_text(center, 202, text=arrow, fill=color, font=('Segoe UI', 38, 'bold'))
+        canvas.create_text(center, 241, text=action, fill=color, font=('Segoe UI', 12, 'bold'))
         if reading['target'] is not None:
-            canvas.create_text(center, 241, text=f"Target {reading['target']:.2f} Hz  |  < lower     > higher", fill='#b7c6d7', font=('Segoe UI', 10))
+            canvas.create_text(center, 271, text=f"Target {reading['target']:.2f} Hz  |  < lower     > higher", fill='#b7c6d7', font=('Segoe UI', 10))
 
     def close(self):
         if self.closed:
