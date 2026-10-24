@@ -6,6 +6,20 @@ from typing import Iterable
 
 
 SORTABLE_COLUMNS = ("move", "removal", "location", "artist", "song", "favorite", "name", "size")
+LOCATION_FILTERS = {
+    "All locations": None,
+    "Active DLC": "Active",
+    "Do Not Want folder": "Do Not Want",
+}
+
+
+def location_filter_matches(location: str, filter_name: str) -> bool:
+    """Return whether a song row belongs in the selected library-location view."""
+
+    if filter_name not in LOCATION_FILTERS:
+        raise ValueError(f"Unknown song location filter: {filter_name}")
+    expected = LOCATION_FILTERS[filter_name]
+    return expected is None or location == expected
 
 
 def removal_row_status(*, checked: bool, queued: bool, f10_marked: bool) -> str:

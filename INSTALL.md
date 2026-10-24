@@ -22,7 +22,7 @@ The executable or app.py must be directly inside that JonsRockSmithMods folder, 
 - Python: `Setup Python.bat` once, then `Run Python.bat`.
 - `Launch JonsRockSmithMods.bat` offers both choices explicitly.
 
-On Setup & startup, confirm running version **0.25.0**, mode and path. File Properties > Details also shows EXE version 0.25.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
+On Setup & startup, confirm running version **0.26.0**, mode and path. File Properties > Details also shows EXE version 0.26.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
 
 ## 4. Check file links before use
 
@@ -39,9 +39,11 @@ Run Full refresh. If paths are wrong, change them in the GUI and refresh again. 
 
 Manual workflow needs no native add-on: select/check archives in the companion, read the warning and typed confirmation, then choose Queue checked until game closes. Whole archives move reversibly from active DLC into Do Not Want after Rocksmith exits; they are not permanently deleted. Use **Undo queued removals** before processing, or **Undo last completed removal** afterward (the last batch remains available after app restart). Undo verifies paths and file identities and requires Rocksmith closed. Existing Restore selected archives still restores any selected Do Not Want files.
 
+To inspect previously moved archives, open **Songs → Show → Do Not Want folder**. The list count appears below the table. Select one or more rows and choose **Restore selected archives** to return them to active DLC.
+
 To remove a track from a multi-song pack, use **Split up whole song pack** and replace the complete pack with verified single-song files. Then check only individual song archives you want moved to Do Not Want and queue them. The complete pack must be split so unselected tracks are not lost.
 
-In-game F10 requires the optional compatible Jons native extension, installed while Rocksmith is closed and loaded after restart. Its hint appears while a fresh song preview is selected; press F10 to mark that preview. Keep the companion open or reopen it after Rocksmith exits. It automatically moves a verified single-song archive to Do Not Want and saves an undo record. It refuses a multi-song pack so one track mark cannot move unrelated tracks; split the pack into individual archives first, then retry the saved F10 mark. No archive moves while Rocksmith is running. F10 does not identify an arrangement already playing.
+In-game F10 requires the updated optional Jons native extension, installed while Rocksmith is closed and loaded after restart. Its hint says the selected preview will be marked for a move to Do Not Want after Rocksmith closes. Press F10 and wait for the green **F10 RECEIVED** message. An orange **F10 not saved** message means the request failed; follow its direction and retry. Keep the companion open or reopen it after Rocksmith exits. It automatically moves a verified single-song archive to Do Not Want and saves an undo record. It refuses a multi-song pack so one track mark cannot move unrelated tracks; split the pack into individual archives first, then retry the saved F10 mark. No archive moves while Rocksmith is running. F10 does not identify an arrangement already playing.
 
 ## First Song Tuning Preferences
 

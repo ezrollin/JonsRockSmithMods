@@ -1,5 +1,5 @@
 diff --git a/DLL/D3DOverlay.cpp b/DLL/D3DOverlay.cpp
-index f13894e..4652257 100644
+index f13894e7c4a7e5c136bee20ac3af780a93eaaf07..fda705dff0be6ed5963cf9a1a079a37b902bcf0b 100644
 --- a/DLL/D3DOverlay.cpp
 +++ b/DLL/D3DOverlay.cpp
 @@ -1,5 +1,6 @@
@@ -34,7 +34,7 @@ index f13894e..4652257 100644
  	}
  }
  
-@@ -342,6 +361,54 @@ void GameOverlay::OnResetDevice() {
+@@ -342,6 +361,57 @@ void GameOverlay::OnResetDevice() {
  	fontCache.OnResetDevice();
  }
  
@@ -47,9 +47,9 @@ index f13894e..4652257 100644
 +
 +void GameOverlay::SetSongRemovalStatus(const std::string& message, bool failed) {
 +    std::lock_guard<std::mutex> lock(songRemovalStatusMutex);
-+    songRemovalStatus = message.substr(0, 160);
++    songRemovalStatus = message.substr(0, 256);
 +    songRemovalStatusFailed = failed;
-+    songRemovalStatusUntil = GetTickCount64() + 10000;
++    songRemovalStatusUntil = GetTickCount64() + 15000;
 +}
 +
 +void GameOverlay::DisplaySongRemovalHint() {
@@ -68,8 +68,8 @@ index f13894e..4652257 100644
 +			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)) return;
 +        std::string key = Settings::ReturnSettingValue(Setting::Key::SongRemovalRequest);
 +        if (key.rfind("VK_", 0) == 0) key.erase(0, 3);
-+		message = "Press " + key + ": mark preview for removal after exit.";
-+		message += "\nSingle-song files only; undo in JonsRockSmithMods.";
++		message = "Press " + key + " to mark this song for removal when Rocksmith closes.";
++		message += "\nIt moves to Do Not Want, so you can undo it. Split song packs first.";
 +    }
 +    const int fontHeight = static_cast<int>(std::max(14u, std::min(22u, WindowSize.height / 44u)));
 +    const int x = WindowSize.width / 40;
@@ -79,17 +79,20 @@ index f13894e..4652257 100644
 +    const int right = (std::min)(static_cast<int>(WindowSize.width) - x,
 +        x + static_cast<int>(WindowSize.width * 0.62f));
 +    const int bottom = (std::min)(static_cast<int>(WindowSize.height) - y,
-+        y + fontHeight * 6);
++        y + fontHeight * 8);
 +    const Resolution fontSize{ 0u, static_cast<unsigned int>(fontHeight) };
 +    const DWORD format = DT_LEFT | DT_WORDBREAK;
++    const bool accepted = message.rfind("F10 RECEIVED:", 0) == 0
++        || message.rfind("F10 received earlier:", 0) == 0;
++    const DWORD messageColor = failed ? 0xFFFFBC70 : (accepted ? 0xFF80FF9A : 0xFFFFFFFF);
 +    DX9DrawText(message, 0xFF000000, x + 2, y + 2, right + 2, bottom + 2, pDevice, fontSize, format);
-+    DX9DrawText(message, failed ? 0xFFFFBC70 : 0xFFFFFFFF, x, y, right, bottom, pDevice, fontSize, format);
++    DX9DrawText(message, messageColor, x, y, right, bottom, pDevice, fontSize, format);
 +}
 +
  void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
  	// Draw text on screen
  	// NOTE: NEVER USE SET VALUES. Always do division of WindowSize width AND heigh so every resolution should have the text in around the same spot.
-@@ -357,7 +420,8 @@ void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
+@@ -357,7 +427,8 @@ void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
  		DisplayCurrentNote();
  		DisplayCurrentTuningForAutoTune();
  		DisplaySongAccuracy();
@@ -101,7 +104,7 @@ index f13894e..4652257 100644
 \ No newline at end of file
 +}
 diff --git a/DLL/D3DOverlay.hpp b/DLL/D3DOverlay.hpp
-index e09195c..9d4d120 100644
+index e09195c3e1a37fe074573f90d7478d3c1a0fdc9c..9d4d1204576a188e03292b330cebeaf8adbafc14 100644
 --- a/DLL/D3DOverlay.hpp
 +++ b/DLL/D3DOverlay.hpp
 @@ -9,6 +9,7 @@
@@ -130,7 +133,7 @@ index e09195c..9d4d120 100644
 \ No newline at end of file
 +}
 diff --git a/DLL/GameState.cpp b/DLL/GameState.cpp
-index 77e546a..3cd575c 100644
+index 77e546a9b2c566ddad78790793367b79c7c4dcd1..3cd575cb341e94f9eb8fd45fc8b00a545db1330f 100644
 --- a/DLL/GameState.cpp
 +++ b/DLL/GameState.cpp
 @@ -1,6 +1,25 @@
@@ -272,7 +275,7 @@ index 77e546a..3cd575c 100644
 \ No newline at end of file
 +}
 diff --git a/DLL/GameState.hpp b/DLL/GameState.hpp
-index 68363ea..891de42 100644
+index 68363ea8c21f6f3970b374d26380826c29040a6f..891de42ac3a0c9bdfa49d6e78fe805dd69977dda 100644
 --- a/DLL/GameState.hpp
 +++ b/DLL/GameState.hpp
 @@ -28,6 +28,7 @@ namespace GameState {
@@ -292,10 +295,10 @@ index 68363ea..891de42 100644
  	inline bool LessonMode = false; // Is the user in LessonMode?
  
 diff --git a/DLL/Keybindings.cpp b/DLL/Keybindings.cpp
-index 46cf50a..9b98efb 100644
+index 46cf50a1fbaf01e9bd6ac7ffee3b42b4e6a70ac6..196b1d8cad66c653a8dcc00bcfc796a28aa6655b 100644
 --- a/DLL/Keybindings.cpp
 +++ b/DLL/Keybindings.cpp
-@@ -1,7 +1,124 @@
+@@ -1,7 +1,125 @@
  #include "stdafx.h"
  #include "Keybindings.hpp"
 +#include "D3DOverlay.hpp"
@@ -303,27 +306,29 @@ index 46cf50a..9b98efb 100644
  namespace {
 +	std::atomic_uint32_t g_songRemovalRequestSequence{ 0 };
 +
++	bool RejectSongRemovalRequest(const std::string& message) {
++		LOG_ERROR("[JonsRockSmithMods] " << message << std::endl);
++		GameOverlay::SetSongRemovalStatus(message, true);
++		return false;
++	}
++
 +	bool WriteSongRemovalRequest(const std::string& songKey) {
-+        GameOverlay::SetSongRemovalStatus("Could not save removal mark. Check the RSMods log and saved marks folder. No song moved.", true);
 +        // SongKey is also used as a filename: accept only the bridge's safe ASCII alphabet.
 +        if (songKey.empty() || songKey.size() > 128 ||
 +            !std::all_of(songKey.begin(), songKey.end(), [](unsigned char value) {
 +                return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 +                    || (value >= '0' && value <= '9') || value == '_' || value == '.' || value == '-';
 +            })) {
-+            LOG_ERROR("[JonsRockSmithMods] Unsafe SongKey; song mark not saved" << std::endl);
-+            return false;
++			return RejectSongRemovalRequest("F10 not saved: the selected song ID is invalid.");
 +        }
 +		DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
 +		if (required == 0 || required > 32768) {
-+			LOG_ERROR("[JonsRockSmithMods] LOCALAPPDATA unavailable; in-game song request was not sent" << std::endl);
-+			return false;
++			return RejectSongRemovalRequest("F10 not saved: Windows could not find the local request folder.");
 +		}
 +		std::wstring localAppData(required, L'\0');
 +		DWORD copied = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData.data(), required);
 +		if (copied == 0 || copied >= required) {
-+			LOG_ERROR("[JonsRockSmithMods] Could not read LOCALAPPDATA; in-game song request was not sent" << std::endl);
-+			return false;
++			return RejectSongRemovalRequest("F10 not saved: Windows could not read the local request folder.");
 +		}
 +		localAppData.resize(copied);
 +
@@ -331,8 +336,7 @@ index 46cf50a..9b98efb 100644
 +		const auto directory = std::filesystem::path(localAppData) / L"JonsRockSmithMods" / L"InGameSongRequests";
 +		std::filesystem::create_directories(directory, directoryError);
 +		if (directoryError) {
-+			LOG_ERROR("[JonsRockSmithMods] Could not create in-game request folder: " << directoryError.message() << std::endl);
-+			return false;
++			return RejectSongRemovalRequest("F10 not saved: could not create the local mark folder.");
 +		}
 +
 +        // Marks remain until acknowledged. Repeated presses share one case-insensitive identity.
@@ -343,10 +347,14 @@ index 46cf50a..9b98efb 100644
 +        const std::string requestId = "song-" + canonicalSongKey;
 +        const std::wstring wideRequestId(requestId.begin(), requestId.end());
 +        const auto requestPath = directory / (L"request-" + wideRequestId + L".json");
-+        if (std::filesystem::exists(requestPath, directoryError)) {
-+            LOG_INFO("[JonsRockSmithMods] Song already marked for later review: " << songKey << std::endl);
-+			GameOverlay::SetSongRemovalStatus("Already marked: " + songKey + "\nThe companion moves one verified song file after Rocksmith exits. Packs are refused.");
-+            return !directoryError;
++		const bool alreadyMarked = std::filesystem::exists(requestPath, directoryError);
++		if (directoryError) {
++			return RejectSongRemovalRequest("F10 not saved: could not check whether this song is already marked.");
++		}
++		if (alreadyMarked) {
++			LOG_INFO("[JonsRockSmithMods] Song already marked for later review: " << songKey << std::endl);
++			GameOverlay::SetSongRemovalStatus("F10 received earlier: this song is already marked for Do Not Want after Rocksmith closes.");
++			return true;
 +        }
 +        size_t requestCount = 0;
 +        for (std::filesystem::directory_iterator entry(directory, directoryError), end;
@@ -357,9 +365,7 @@ index 46cf50a..9b98efb 100644
 +            }
 +        }
 +        if (directoryError || requestCount >= 64) {
-+            LOG_ERROR("[JonsRockSmithMods] Saved song marks full or unreadable; review them in the companion app" << std::endl);
-+            GameOverlay::SetSongRemovalStatus("Mark not saved: saved marks are full or unreadable. Review saved marks in the companion.", true);
-+            return false;
++			return RejectSongRemovalRequest("F10 not saved: saved marks are full or unreadable. Review them in JonsRockSmithMods.");
 +        }
 +
 +		const auto sequence = g_songRemovalRequestSequence.fetch_add(1, std::memory_order_relaxed);
@@ -375,8 +381,7 @@ index 46cf50a..9b98efb 100644
 +		HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
 +			FILE_ATTRIBUTE_NORMAL, nullptr);
 +		if (file == INVALID_HANDLE_VALUE) {
-+			LOG_ERROR("[JonsRockSmithMods] Could not create in-game request file; request not sent" << std::endl);
-+			return false;
++			return RejectSongRemovalRequest("F10 not saved: could not create the mark file. Check folder permissions.");
 +		}
 +		DWORD written = 0;
 +		const bool wroteAll = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr)
@@ -384,11 +389,10 @@ index 46cf50a..9b98efb 100644
 +		CloseHandle(file);
 +		if (!wroteAll || !MoveFileExW(temporaryPath.c_str(), requestPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
 +			DeleteFileW(temporaryPath.c_str());
-+			LOG_ERROR("[JonsRockSmithMods] Could not publish in-game request; request not sent" << std::endl);
-+			return false;
++			return RejectSongRemovalRequest("F10 not saved: Windows could not finish writing the mark file.");
 +		}
 +		LOG_INFO("[JonsRockSmithMods] Song marked for later reversible removal review: " << songKey << std::endl);
-+		GameOverlay::SetSongRemovalStatus("Marked: " + songKey + "\nThe companion moves one verified song file after Rocksmith exits. Keep or reopen the app; undo there. Packs are refused.");
++		GameOverlay::SetSongRemovalStatus("F10 RECEIVED: " + songKey + " marked for removal.\nAfter close, the app moves a verified single-song file to Do Not Want.\nPacks must be split first; undo in JonsRockSmithMods.");
 +		return true;
 +	}
 +
@@ -396,14 +400,14 @@ index 46cf50a..9b98efb 100644
 +		if (!GameState::GameLoaded || GameState::IsInSong()
 +			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)) {
 +			LOG_INFO("[JonsRockSmithMods] Song removal hotkey ignored outside song-list menus" << std::endl);
-+			GameOverlay::SetSongRemovalStatus("F10 works only in the song list while a fresh song preview is selected. No song marked.", true);
++			GameOverlay::SetSongRemovalStatus("F10 not saved: choose a song in the song list and wait for its preview first.", true);
 +			return;
 +		}
 +        const std::string captureMenu = GameState::GetCurrentMenu();
 +		const std::string songKey = GameState::GetPreviewSongKey();
 +		if (songKey.empty()) {
-+			LOG_INFO("[JonsRockSmithMods] No current preview SongKey; enable song previews and select a song first" << std::endl);
-+            GameOverlay::SetSongRemovalStatus("No current song preview. Enable song previews and select the song again; no mark saved.", true);
++			LOG_INFO("[JonsRockSmithMods] No current preview SongKey; select a song and wait for its preview first" << std::endl);
++			GameOverlay::SetSongRemovalStatus("F10 not saved: no song preview is ready. Select the song and wait, then press F10.", true);
 +			return;
 +		}
 +        // Re-read the live preview immediately before capture; never use cached GetSongKey().
@@ -411,7 +415,7 @@ index 46cf50a..9b98efb 100644
 +			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)
 +			|| GameState::GetCurrentMenu() != captureMenu
 +            || GameState::GetPreviewSongKey() != songKey) {
-+            GameOverlay::SetSongRemovalStatus("Song selection changed. Select it again and retry; no mark saved.", true);
++			GameOverlay::SetSongRemovalStatus("F10 not saved: song selection changed. Select it again, wait for preview, then retry.", true);
 +            return;
 +        }
 +        WriteSongRemovalRequest(songKey);
@@ -420,7 +424,7 @@ index 46cf50a..9b98efb 100644
  	Framework::KeyEvent CaptureKeyEvent(WPARAM keyPressed, LPARAM lParam, Framework::KeyEdge edge) {
  		Framework::KeyEvent event;
  		event.virtualKey = static_cast<std::uint32_t>(keyPressed);
-@@ -30,6 +147,11 @@ namespace Keybindings {
+@@ -30,6 +148,11 @@ namespace Keybindings {
  		commands.SetKeyResolver([](std::string_view setting) {
  			return Settings::GetKeyBind(std::string(setting));
  		});
@@ -433,7 +437,7 @@ index 46cf50a..9b98efb 100644
  			Framework::Availability::Initialized,
  			[](Framework::ModContext&, const Framework::KeyEvent&) {
 diff --git a/DLL/ModManager.cpp b/DLL/ModManager.cpp
-index 6853a17..0a083f6 100644
+index 6853a176ff8d876a626c6e3caaa828f3c8d0e12f..0a083f6bb5ffd9f15c85c2ab46a69c449ebe46d4 100644
 --- a/DLL/ModManager.cpp
 +++ b/DLL/ModManager.cpp
 @@ -2,6 +2,7 @@
@@ -592,7 +596,7 @@ index 6853a17..0a083f6 100644
  		if (GameState::IsInSong())
  			return;
 diff --git a/DLL/Mods/AutoLoadProfileMod.cpp b/DLL/Mods/AutoLoadProfileMod.cpp
-index f1aa250..7a27980 100644
+index f1aa2503e45e1d314a7ee96d417e6342f3aad9e6..7a27980224203d2daf677f54b64f6d3a9499ec5a 100644
 --- a/DLL/Mods/AutoLoadProfileMod.cpp
 +++ b/DLL/Mods/AutoLoadProfileMod.cpp
 @@ -35,15 +35,19 @@ void AutoLoadProfileMod::OnTick(ModContext& c) {
@@ -617,7 +621,7 @@ index f1aa250..7a27980 100644
  	}
  }
 diff --git a/DLL/Mods/AutoLoadProfileMod.hpp b/DLL/Mods/AutoLoadProfileMod.hpp
-index 3ed996c..e1a1b94 100644
+index 3ed996ca542f70d17dee5f95db97614137a3475b..e1a1b942444a5eec3ea418d66025e607d934b7f1 100644
 --- a/DLL/Mods/AutoLoadProfileMod.hpp
 +++ b/DLL/Mods/AutoLoadProfileMod.hpp
 @@ -17,4 +17,5 @@ private:
@@ -627,7 +631,7 @@ index 3ed996c..e1a1b94 100644
 +	unsigned int profileSearchSteps = 0;
  };
 diff --git a/DLL/Mods/RiffRepeaterMod.cpp b/DLL/Mods/RiffRepeaterMod.cpp
-index a86f726..3b53e93 100644
+index a86f726630674db395fcdc66366e1dff20d4f389..3b53e939fec42ca296334257896aec22cc3b8b72 100644
 --- a/DLL/Mods/RiffRepeaterMod.cpp
 +++ b/DLL/Mods/RiffRepeaterMod.cpp
 @@ -1,5 +1,29 @@
@@ -893,7 +897,7 @@ index a86f726..3b53e93 100644
  
  static Framework::ModRegistrar<RiffRepeaterMod> _riffRepeaterReg;
 diff --git a/DLL/Mods/RiffRepeaterMod.hpp b/DLL/Mods/RiffRepeaterMod.hpp
-index cdd0579..2870ac2 100644
+index cdd057955f2c8132661aeed5fcdae2be70fa1fca..2870ac23b8daf2f6b1b2e84c426eee8979d322d7 100644
 --- a/DLL/Mods/RiffRepeaterMod.hpp
 +++ b/DLL/Mods/RiffRepeaterMod.hpp
 @@ -4,6 +4,10 @@
@@ -942,7 +946,7 @@ index cdd0579..2870ac2 100644
 +	bool fixedSpeedCorrectionSuppressionLogged = false;
  };
 diff --git a/DLL/Settings.cpp b/DLL/Settings.cpp
-index 9263001..08c5504 100644
+index 92630010e5b49825861d2deb9fd79dcf3c88de90..08c5504eda990e5fa3592151eba8b88b79e0080a 100644
 --- a/DLL/Settings.cpp
 +++ b/DLL/Settings.cpp
 @@ -45,6 +45,7 @@ void Settings::Initialize()
@@ -1019,7 +1023,7 @@ index 9263001..08c5504 100644
  	modSettings[Setting::AutoTuneForSongDevice] = reader.GetValue("Toggle Switches", "AutoTuneForSongDevice", "");
  	modSettings[Setting::MidiInDevice] = reader.GetValue("Toggle Switches", "MidiInDevice", "");
 diff --git a/DLL/Settings.hpp b/DLL/Settings.hpp
-index c70b6d1..cbc429f 100644
+index c70b6d10195224dff779f2d419ec15e49c48bf27..cbc429f2c8edc26bcd8177851c549b5ab221ebf6 100644
 --- a/DLL/Settings.hpp
 +++ b/DLL/Settings.hpp
 @@ -24,6 +24,9 @@ namespace Settings {
@@ -1041,7 +1045,7 @@ index c70b6d1..cbc429f 100644
  			inline constexpr char ShowSongTimer[]        = "ShowSongTimerKey";
  			inline constexpr char ForceReEnumeration[]   = "ForceReEnumerationKey";
 diff --git a/DLL/Version.h b/DLL/Version.h
-index f283d1e..ab153d0 100644
+index f283d1e4f39b14691ac8d73c6ac7fc385d4ca57f..ab153d01fdc53416e05307ee303e1d4e8b9308c6 100644
 --- a/DLL/Version.h
 +++ b/DLL/Version.h
 @@ -21,4 +21,4 @@
@@ -1051,7 +1055,7 @@ index f283d1e..ab153d0 100644
 -	RSMODS_VERSION_STRING "-" RSMODS_GIT_HASH
 +	RSMODS_VERSION_STRING "-" RSMODS_GIT_HASH "-JonsRockSmithMods"
 diff --git a/DLL/VersioningStruct.cpp b/DLL/VersioningStruct.cpp
-index ba1cde8..46b2c57 100644
+index ba1cde8ac69eb37b1aebbbd85f24bfe1435e9b61..46b2c5779b709c2ac2c2e490a822fd09f3a3c6d3 100644
 --- a/DLL/VersioningStruct.cpp
 +++ b/DLL/VersioningStruct.cpp
 @@ -21,6 +21,11 @@ namespace {
@@ -1074,7 +1078,7 @@ index ba1cde8..46b2c57 100644
 \ No newline at end of file
 +}
 diff --git a/DLL/VersioningStruct.h b/DLL/VersioningStruct.h
-index 821de89..4dce270 100644
+index 821de89d9f6c7e84a9182ea40db1a2e2a2e924e4..4dce2701a005fa9c55904d5c6a364d0163c5e81d 100644
 --- a/DLL/VersioningStruct.h
 +++ b/DLL/VersioningStruct.h
 @@ -9,6 +9,9 @@ enum class VersionType : int

@@ -85,6 +85,19 @@ class NativeInstallTests(unittest.TestCase):
 
         self.assertEqual(previous_jons_bytes, self.original.read_bytes())
 
+    def test_known_local_extension_without_installer_artifact_is_reported(self):
+        current_hash = "8c972998f304c5bfd81dbe1a010769d306532e26ad9e0c0447749f9860923586"
+        with patch("native_install.KNOWN_JONS_RELEASE_SHA256", frozenset({current_hash})):
+            with patch("native_install.sha256", return_value=current_hash):
+                self.assertEqual(
+                    "Known Jons native extension found; optional installer binary is not bundled",
+                    support_status(
+                        self.game,
+                        Path(self.temp.name) / "not-bundled.dll",
+                        self.backups,
+                    ),
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

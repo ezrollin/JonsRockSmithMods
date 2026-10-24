@@ -6,6 +6,7 @@ import textwrap
 import unittest
 import tkinter as tk
 from contextlib import ExitStack
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -102,6 +103,56 @@ class LayoutTests(unittest.TestCase):
         app.protocol = mock.Mock()
         app._store_destination_label = mock.Mock(return_value="backup/songs")
         app._update_action_states = mock.Mock()
+        combobox_mock = None
+        with ExitStack() as patches:
+            for name in ("Frame", "LabelFrame", "Notebook", "Label", "Entry", "Button",
+                         "Checkbutton", "Spinbox", "Combobox", "Treeview", "Scrollbar", "Progressbar"):
+                if name == "Notebook":
+                    patches.enter_context(mock.patch("app.ttk.Notebook", side_effect=lambda *a, **k: mock.MagicMock()))
+                elif name == "Combobox":
+                    combobox_mock = patches.enter_context(mock.patch("app.ttk.Combobox"))
+                else:
+                    patches.enter_context(mock.patch(f"app.ttk.{name}"))
+            patches.enter_context(mock.patch("app.ScrollablePage"))
+            patches.enter_context(mock.patch("app.HoverTooltip"))
+            patches.enter_context(mock.patch("app.Menu"))
+            patches.enter_context(mock.patch("app.tk.StringVar", side_effect=Value))
+            app._build()
+        app.rows = []
+        app.visible_rows = {}
+        app.checked_paths = set()
+        app.location_filter_var = Value(value="All locations")
+        app.tree.selection.return_value = ()
+        app.tree.focus.return_value = ""
+        app.tree.yview.return_value = (0.0, 1.0)
+        app._apply_tree_sort = mock.Mock()
+        app._render()
+        self.assertEqual(
+            app.checked_count_var.get(),
+            "Showing 0 (All locations); Do Not Want folder: 0; 0 checked; 0 queued; 0 F10 mark(s)",
+        )
+        location_filter_call = next(
+            call for call in combobox_mock.call_args_list
+            if "Do Not Want folder" in call.kwargs.get("values", ())
+        )
+        self.assertEqual(
+            ("All locations", "Active DLC", "Do Not Want folder"),
+            location_filter_call.kwargs["values"],
+        )
+        self.assertEqual(app.pages.add.call_count, 3)
+
+    def test_do_not_want_filter_renders_only_archives_in_that_folder(self):
+        app = App.__new__(App)
+        tree = ast.parse(textwrap.dedent(inspect.getsource(App.__init__)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr.endswith("_var"):
+                        setattr(app, target.attr, Value())
+        app.tooltips = []
+        app.protocol = mock.Mock()
+        app._store_destination_label = mock.Mock(return_value="backup/songs")
+        app._update_action_states = mock.Mock()
         with ExitStack() as patches:
             for name in ("Frame", "LabelFrame", "Notebook", "Label", "Entry", "Button",
                          "Checkbutton", "Spinbox", "Combobox", "Treeview", "Scrollbar", "Progressbar"):
@@ -114,16 +165,26 @@ class LayoutTests(unittest.TestCase):
             patches.enter_context(mock.patch("app.Menu"))
             patches.enter_context(mock.patch("app.tk.StringVar", side_effect=Value))
             app._build()
-        app.rows = []
+
+        active = SimpleNamespace(relative_path="active.psarc", path=Path("active.psarc"), size=10, location="Active")
+        removed = SimpleNamespace(relative_path="removed.psarc", path=Path("removed.psarc"), size=20, location="Do Not Want")
+        app.rows = [active, removed]
         app.visible_rows = {}
         app.checked_paths = set()
+        app.pending_move_paths = set()
+        app.pending_game_song_keys = set()
+        app.favorite_states = {}
+        app.metadata = SimpleNamespace(get=mock.Mock(return_value=None))
+        app.filter_var = Value()
+        app.location_filter_var = Value(value="Do Not Want folder")
         app.tree.selection.return_value = ()
         app.tree.focus.return_value = ""
         app.tree.yview.return_value = (0.0, 1.0)
         app._apply_tree_sort = mock.Mock()
-        app._render()
-        self.assertEqual(
-            app.checked_count_var.get(),
-            "0 archives checked for removal; 0 queued after close; 0 saved F10 mark(s)",
-        )
-        self.assertEqual(app.pages.add.call_count, 3)
+
+        App._render(app)
+
+        self.assertEqual([removed], list(app.visible_rows.values()))
+        self.assertEqual(1, app.tree.insert.call_count)
+        self.assertEqual("Do Not Want", app.tree.insert.call_args.kwargs["values"][2])
+        self.assertIn("Do Not Want folder: 1", app.checked_count_var.get())

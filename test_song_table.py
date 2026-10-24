@@ -8,6 +8,7 @@ from song_table import (
     SORTABLE_COLUMNS,
     context_actions,
     context_selection,
+    location_filter_matches,
     next_sort_state,
     removal_row_status,
     song_sort_key,
@@ -58,6 +59,16 @@ class SongTableTests(unittest.TestCase):
         self.assertEqual(("restore",), context_actions(("Do Not Want",)))
         self.assertEqual((), context_actions(("Active", "Do Not Want")))
         self.assertEqual((), context_actions(()))
+
+    def test_location_filter_exposes_active_and_do_not_want_lists(self):
+        self.assertTrue(location_filter_matches("Active", "All locations"))
+        self.assertTrue(location_filter_matches("Do Not Want", "All locations"))
+        self.assertTrue(location_filter_matches("Active", "Active DLC"))
+        self.assertFalse(location_filter_matches("Do Not Want", "Active DLC"))
+        self.assertTrue(location_filter_matches("Do Not Want", "Do Not Want folder"))
+        self.assertFalse(location_filter_matches("Active", "Do Not Want folder"))
+        with self.assertRaises(ValueError):
+            location_filter_matches("Active", "unknown")
 
 
 if __name__ == "__main__":

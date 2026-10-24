@@ -66,7 +66,10 @@ from pending_moves import (
     undo_last_completed_moves,
 )
 from song_store import SongFile, SongStore, StoreError, game_is_running, normalize_review_root
-from song_table import context_actions, context_selection, next_sort_state, removal_row_status, song_sort_key
+from song_table import (
+    context_actions, context_selection, location_filter_matches, next_sort_state,
+    removal_row_status, song_sort_key,
+)
 from split_pack import (
     SplitPackError, selected_song_payload, split_and_install_pack,
     split_pack_unavailable_reason, update_visible_song_selection,
@@ -81,7 +84,7 @@ from track_selection import TrackCheckboxSelection
 from ui_layout import ScrollablePage, initial_window_size
 
 
-APP_VERSION = "0.25.0"
+APP_VERSION = "0.26.0"
 DEFAULT_DIFFICULTY_PERCENT = 50
 DEFAULT_GAME = next((parent for parent in Path(__file__).resolve().parents if (parent / "Rocksmith2014.exe").is_file()), Path(r"C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014"))
 DEFAULT_REVIEW = DEFAULT_GAME / "DoNotWantSongs"
@@ -284,6 +287,7 @@ class App(tk.Tk):
         self._setting_default_review_path = False
         self.profile_var = tk.StringVar(value=self._discover_profile())
         self.filter_var = tk.StringVar()
+        self.location_filter_var = tk.StringVar(value="All locations")
         self.speed_enabled_var = tk.BooleanVar(value=False)
         self.speed_percent_var = tk.StringVar(value=str(DEFAULT_SPEED_PERCENT))
         self.speed_status_var = tk.StringVar(value="Checking Jons RSMods extension...")
@@ -386,8 +390,18 @@ class App(tk.Tk):
         ttk.Label(toolbar, text="Search songs").grid(row=0, column=0, sticky="w")
         ttk.Entry(toolbar, textvariable=self.filter_var).grid(row=0, column=1, sticky="ew", padx=8)
         self.filter_var.trace_add("write", lambda *_: self._render())
+        ttk.Label(toolbar, text="Show").grid(row=0, column=2, sticky="e", padx=(4, 2))
+        self.location_filter = ttk.Combobox(
+            toolbar,
+            textvariable=self.location_filter_var,
+            values=("All locations", "Active DLC", "Do Not Want folder"),
+            state="readonly",
+            width=21,
+        )
+        self.location_filter.grid(row=0, column=3, sticky="ew")
+        self.location_filter_var.trace_add("write", lambda *_: self._render())
         tools = ttk.Frame(toolbar)
-        tools.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        tools.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 0))
         for column, (text, command) in enumerate((
             ("Full refresh", self.refresh),
             ("Scan favorites", self._scan_favorites),
@@ -2017,10 +2031,10 @@ class App(tk.Tk):
         messagebox.showinfo(
             "In-game removal: F10 in the song list",
             "1. Install the compatible Jons native extension while Rocksmith is closed, then restart Rocksmith.\n"
-            "2. In Learn a Song, wait for the selected song preview. F10 hint appears only while a live preview is selected.\n"
-            "3. Press the configured mark key (default F10). After Rocksmith closes, this app automatically moves a verified single-song archive to Do Not Want. Keep this app open, or reopen it after the game exits.\n"
+            "2. In Learn a Song, wait for the selected song preview. The on-screen hint says the mark key and that the song will move to Do Not Want after Rocksmith closes.\n"
+            "3. Press F10 and wait for the green 'F10 RECEIVED' message. Orange 'F10 not saved' means the mark did not work; follow that message and retry. After Rocksmith closes, this app moves only a verified single-song archive. Keep this app open, or reopen it after the game exits.\n"
             "4. Use Undo last completed removal to restore a moved archive. A multi-song pack is never moved from one F10 mark; split it into single-song files first, then retry the saved mark.\n\n"
-            "No archive moves while Rocksmith runs. F10 identifies the current preview, not an arrangement already playing. If the mark cannot be matched safely, it stays saved and the app explains how to retry.\n\n"
+            "No archive moves while Rocksmith runs. The Songs tab's Show menu can list the Do Not Want folder and its contents. F10 identifies the current preview, not an arrangement already playing. If the mark cannot be matched safely, no archive moves and the app explains how to retry.\n\n"
             "Public downloads do not bundle the optional modified RSMods DLL because upstream does not state a redistribution license. The local build instructions are in native/README.md in the developer repository. Python and EXE app workflows both work without that optional extension for manual song selection.\n\n"
             f"Native status: {status}\nRunning app: {APP_VERSION}", parent=self,
         )
@@ -2110,14 +2124,19 @@ class App(tk.Tk):
             if batch.invalid_count:
                 logging.warning("Discarded %s malformed in-game song request(s)", batch.invalid_count)
             if batch.requests and game_is_running():
+                song_keys = ", ".join(request.song_key for request in batch.requests[:3])
+                more = f" and {len(batch.requests) - 3} more" if len(batch.requests) > 3 else ""
                 self.pending_moves_status_var.set(
-                    f"{len(batch.requests)} F10 mark(s) saved. Keep playing; verified single-song archives move after Rocksmith exits."
+                    f"F10 received: {song_keys}{more}. Mark saved; matching single-song files move to Do Not Want after Rocksmith closes."
                 )
                 return
             eligible = [request for request in batch.requests
                         if request.request_id not in self.deferred_game_song_requests]
             if eligible and not self.rows:
-                self.pending_moves_status_var.set("F10 marks saved. Run Full refresh to identify their archives; no files moved.")
+                song_keys = ", ".join(request.song_key for request in eligible[:3])
+                self.pending_moves_status_var.set(
+                    f"F10 received: {song_keys}. Mark saved. Run Full refresh to locate the archive; no files moved yet."
+                )
                 return
             if eligible:
                 request = eligible[0]
@@ -2532,6 +2551,7 @@ class App(tk.Tk):
                     self._queue_in_game_song_archive(result)
                 elif description == "Queueing in-game selected archive":
                     request = self.active_game_song_request
+                    song_key = request.song_key if request is not None else "selected song"
                     if request is not None:
                         try:
                             discard_game_song_request(request)
@@ -2543,10 +2563,10 @@ class App(tk.Tk):
                     self._refresh_pending_move_paths()
                     self.pending_move_retry_paused = False
                     self.pending_moves_status_var.set(
-                        "F10 mark matched. Single-song archive queued for automatic reversible move to Do Not Want."
+                        f"F10 mark received for {song_key}; queued to move to Do Not Want after Rocksmith closes. Undo is available."
                     )
                     self.status_var.set(
-                        "F10 removal queued. Undo last completed removal restores the song."
+                        f"F10 mark received for {song_key}; queued for Do Not Want after Rocksmith closes. Undo remains available."
                     )
                 elif description == "Processing queued song removals":
                     if not isinstance(result, PendingMoveResult):
@@ -2661,6 +2681,7 @@ class App(tk.Tk):
 
     def _render(self) -> None:
         term = self.filter_var.get().casefold().strip()
+        location_filter = self.location_filter_var.get()
         pending_move_paths = self.__dict__.get("pending_move_paths", set())
         pending_game_song_keys = self.__dict__.get("pending_game_song_keys", set())
         selected_before = tuple(self.tree.selection())
@@ -2672,6 +2693,8 @@ class App(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         self.visible_rows.clear()
         for row in self.rows:
+            if not location_filter_matches(row.location, location_filter):
+                continue
             metadata = self.metadata.get(row.path)
             artist, title = archive_table_values(metadata)
             favorite = self.favorite_states.get(row.relative_path, "Unknown")
@@ -2709,9 +2732,10 @@ class App(tk.Tk):
             self.tree.yview_moveto(scroll_position)
         all_checked = sum(1 for row in self.rows
                           if row.location == "Active" and self._path_key(row) in self.checked_paths)
+        do_not_want_count = sum(1 for row in self.rows if row.location == "Do Not Want")
         self.checked_count_var.set(
-            f"{all_checked} archives checked for removal; {len(pending_move_paths)} queued after close; "
-            f"{len(pending_game_song_keys)} saved F10 mark(s)"
+            f"Showing {len(self.visible_rows)} ({location_filter}); Do Not Want folder: {do_not_want_count}; "
+            f"{all_checked} checked; {len(pending_move_paths)} queued; {len(pending_game_song_keys)} F10 mark(s)"
         )
 
     def _refresh_pending_move_paths(self) -> None:

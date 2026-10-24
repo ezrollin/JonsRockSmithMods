@@ -22,6 +22,7 @@ KNOWN_JONS_RELEASE_SHA256 = frozenset({
     "a464eaf61f0ec328f2360a8074eb95e1dccbbc7f029a600d8e72d90bdd6e7ddd",
     "54d35a4eea5f9182f92eafafb0c26522545083fd6ee142dd36724cab85456f4a",
     "dd82ca38d9d6f51a0a5f2e6d837ab1be60fc84e4068206e88d4d60b9b132681e",
+    "8c972998f304c5bfd81dbe1a010769d306532e26ad9e0c0447749f9860923586",
 })
 PATCHED_DLL = Path(__file__).parent / "native" / "artifacts" / "xinput1_3.dll"
 STATE_DIR = Path.home() / "Documents" / "JonsRockSmithMods" / "Backups"

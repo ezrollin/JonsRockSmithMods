@@ -4,7 +4,7 @@ This patch targets upstream RSMods commit `1e4a67d43dfd0bae2b613edc4cd67b922332d
 
 ## Visible in-game song marks
 
-The local extension adds a default-on hint while a fresh song preview is active and ten-second saved/error feedback. In Learn a Song, wait for the desired preview, then press F10. Its exact SongKey is saved as a durable request. The extension checks the preview-eligible menu state, a fresh preview identity, and unchanged menu before publication. It never changes archives inside the game.
+The local extension shows a default-on hint while a fresh song preview is active: press F10 to mark it for Do Not Want after Rocksmith closes. After the durable request is written, a green **F10 RECEIVED** message confirms the SongKey; orange **F10 not saved** feedback explains rejected or failed writes. Feedback stays visible for 15 seconds. In Learn a Song, wait for the desired preview, then press F10. The extension checks the preview-eligible menu state, a fresh preview identity, and unchanged menu before publishing the durable request. It never changes archives inside the game.
 
 After Rocksmith closes, the companion automatically queues a verified single-song archive for a reversible move to Do Not Want. Keep/reopen the companion to process it; Undo last completed removal restores it. Missing/ambiguous metadata never guesses an archive. Multi-song archives are refused; split the pack first. F10 is not a permanent delete.
 

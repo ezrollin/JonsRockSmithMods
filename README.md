@@ -1,4 +1,4 @@
-# JonsRockSmithMods 0.25.0
+# JonsRockSmithMods 0.26.0
 
 Windows companion for Rocksmith 2014 Remastered: reversible song removal, whole-pack splitting, difficulty/speed settings, and explicit guitar intonation tuning.
 
@@ -21,13 +21,14 @@ If Steam uses a different library, place it inside your actual Rocksmith2014 fol
 
 Open **Setup & startup** and use **Browse** to verify this computer's Rocksmith folder, Do Not Want backup folder, and Steam profile ending in `*_PRFLDB`. By default, the backup folder is `DoNotWantSongs` inside the configured Rocksmith2014 folder; changing the Rocksmith folder updates this default until you choose a custom backup path. Paths differ between Steam accounts, drives and libraries. Do not copy another person's user/profile paths or edit source code to change these links. Archive/title/split/difficulty features also need a separately installed compatible Rocksmith Toolkit; details are in INSTALL.md.
 
-**Setup & startup displays the running version, EXE/Python mode, and exact running path.** The EXE's Windows file properties also show version 0.25.0. Use these to distinguish an old copy.
+**Setup & startup displays the running version, EXE/Python mode, and exact running path.** The EXE's Windows file properties also show version 0.26.0. Use these to distinguish an old copy.
 
 ## Features and limits
 
 - Check or select song archives in the companion while the game runs; queue reversible removal. After Rocksmith closes, confirmed whole archives move to Do Not Want and can be restored. Keep/reopen the companion to process work.
+- In **Songs**, choose **Show → Do Not Want folder** to see the archives currently moved out of active DLC. Select rows and choose **Restore selected archives** to put them back.
 - To remove individual tracks from a pack, split/replace the complete pack with verified single-song files first, then queue only the songs you want moved.
-- **Native in-game removal is optional.** With a locally built compatible Jons RSMods extension, the F10 hint appears only while a live song preview is selected. Press F10 to mark that preview. After Rocksmith closes, the companion automatically moves a safely matched single-song archive to Do Not Want; keep the companion open or reopen it afterward. Undo last completed removal restores the file. Multi-song packs are refused and must be split first. F10 does not identify an arrangement already playing.
+- **Native in-game removal is optional.** With the updated locally built Jons RSMods extension, the song-list hint says F10 will mark the preview to move to Do Not Want after Rocksmith closes. A green **F10 RECEIVED** message confirms the request was saved; an orange **F10 not saved** message means it failed. The companion moves only a verified single-song archive; keep the companion open or reopen it after the game exits. Undo last completed removal restores the file. Multi-song packs are refused and must be split first. F10 does not identify an arrangement already playing.
 - **First Song Tuning Preferences** are in the Tune guitar window. Choose whether to tune once at the first song after every game launch, and choose JonsRockSmithMods equal-tempered A=440 pitch targets or Rocksmith's original per-song pitch reference. Jons standard preserves each song's semitone tuning, including Drop D, and corrects chart-authored cents offsets; it does not retune backing audio. Rocksmith shows no later song tuner in the same session. Save with Rocksmith closed and restart the game to apply these settings; the compatible native extension is required.
 - The optional modified RSMods DLL is **not included in public downloads**: upstream has no stated redistribution license. Developer build/provenance instructions are in native/README.md. Manual companion selection/removal works without that extension. Upstream RSMods installation is separate.
 - Split a complete, self-contained pack into verified single-song archives. Only after verification does the original pack move to Do Not Want. Missing recordings cannot be reconstructed by splitting.
