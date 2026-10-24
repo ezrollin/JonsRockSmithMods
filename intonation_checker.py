@@ -1,0 +1,426 @@
+"""Explicit open-string tuning and fretted-12th intonation with shared live input."""
+from __future__ import annotations
+import logging
+import math
+import time
+import tkinter as tk
+from tkinter import messagebox, ttk
+from intonation_analysis import DEFAULT_TUNING, TUNING_PRESETS, ManualIntonationSession, PitchEstimate, cents_difference, cents_position, frequency_for_note, note_for_frequency, pitch_band, pitch_state, tuner_adjustment, TUNER_COLOR_AMBER, TUNER_COLOR_GREEN, TUNER_COLOR_NEUTRAL, TUNER_COLOR_RED
+from tuner_settings import default_settings, load_tuner_settings, save_tuner_settings
+from ui_layout import ScrollablePage
+from waveform_input import AudioInputDevice, WaveformPitchInput, enumerate_input_devices, preferred_guitar_device
+STRING_LABELS = ('String 6 - lowest', 'String 5', 'String 4', 'String 3', 'String 2', 'String 1 - highest')
+TUNING_LABEL_TO_NAME = {f"{name} ({' '.join(notes)})": name for name, notes in TUNING_PRESETS.items()}
+TUNING_CHOICES = tuple(TUNING_LABEL_TO_NAME)
+DEFAULT_TUNING_LABEL = next((label for label, name in TUNING_LABEL_TO_NAME.items() if name == DEFAULT_TUNING))
+
+def tuner_window_size(screen_width, screen_height):
+    return (min(880, max(360, int(screen_width) - 60)), min(800, max(300, int(screen_height) - 80)))
+
+def guided_capture_sequence():
+    """Legacy sequence description; the current UI never advances automatically."""
+    return tuple(((number, stage) for number in range(6, 0, -1) for stage in ('open', 'fret12')))
+
+class IntonationCheckerWindow:
+
+    def __init__(self, master):
+        self.master = master
+        self.window = tk.Toplevel(master)
+        self.window.title('JonsRockSmithMods - Open tuning / 12th-fret intonation')
+        width, height = tuner_window_size(self.window.winfo_screenwidth(), self.window.winfo_screenheight())
+        self.window.geometry(f'{width}x{height}')
+        self.window.minsize(min(width, 420), min(height, 360))
+        self.window.protocol('WM_DELETE_WINDOW', self.close)
+        self.closed = False
+        self.paused = False
+        self.poll_id = None
+        self.discovery_id = None
+        self.startup_id = None
+        self.capture = None
+        self.device_map = {}
+        self.devices = []
+        self.flow = ManualIntonationSession()
+        self.current_pitch = None
+        self.last_update = None
+        self.last_observed_timestamp = None
+        self._pending_input_label = ''
+        self.current_live_message = 'PLAY A NOTE'
+        self.settings_error = ''
+        try:
+            self.settings = load_tuner_settings()
+        except Exception as exc:
+            logging.exception('Could not load tuner preferences')
+            self.settings = default_settings()
+            self.settings_error = f'Preferences could not load: {exc}'
+        preset = self.settings['tuning']
+        self.device_var = tk.StringVar(value='')
+        self.tuning_var = tk.StringVar(value=next((label for label, name in TUNING_LABEL_TO_NAME.items() if name == preset)))
+        self.string_var = tk.StringVar(value=STRING_LABELS[0])
+        self.stage_var = tk.StringVar(value='open')
+        self.offset_var = tk.StringVar(value='0')
+        self.input_status_var = tk.StringVar(value='Finding guitar cable; audio stays in memory and is never recorded.')
+        self.instruction_var = tk.StringVar(value='')
+        self.live_detail_var = tk.StringVar(value='Choose the string and OPEN or FRET 12. The app never switches them automatically.')
+        self.preference_status_var = tk.StringVar(value=self.settings_error)
+        self._load_reference_offsets()
+        self._build()
+        self._update_instruction()
+        self.startup_id = self.window.after(100, self.refresh_devices)
+        self.discovery_id = self.window.after(5000, self._discover_missing_cable)
+
+    def _build(self):
+        host = ttk.Frame(self.window)
+        host.pack(fill='both', expand=True)
+        host.columnconfigure(0, weight=1)
+        host.rowconfigure(0, weight=1)
+        self.scroll_page = ScrollablePage(host)
+        self.scroll_page.grid(row=0, column=0, sticky='nsew')
+        root = self.scroll_page.content
+        root.columnconfigure(0, weight=1)
+        ttk.Label(root, text='Choose string and stage. OPEN tunes the string; FRET 12 checks intonation against its captured open octave.', wraplength=780, font=('Segoe UI', 11, 'bold')).grid(row=0, column=0, sticky='ew', pady=(0, 10))
+        setup = ttk.LabelFrame(root, text='Input and selected string', padding=10)
+        setup.grid(row=1, column=0, sticky='ew')
+        setup.columnconfigure(1, weight=1)
+        ttk.Label(setup, text='Guitar input').grid(row=0, column=0, sticky='w')
+        self.device_combo = ttk.Combobox(setup, textvariable=self.device_var, state='readonly')
+        self.device_combo.grid(row=0, column=1, sticky='ew', padx=8)
+        self.device_combo.bind('<<ComboboxSelected>>', self._device_selected)
+        self.refresh_button = ttk.Button(setup, text='Refresh inputs', command=self.refresh_devices)
+        self.refresh_button.grid(row=0, column=2)
+        ttk.Label(setup, text='Tuning').grid(row=1, column=0, sticky='w', pady=6)
+        self.tuning_combo = ttk.Combobox(setup, textvariable=self.tuning_var, values=TUNING_CHOICES, state='readonly')
+        self.tuning_combo.grid(row=1, column=1, columnspan=2, sticky='ew', padx=8)
+        self.tuning_combo.bind('<<ComboboxSelected>>', lambda _event: self._on_tuning_changed())
+        ttk.Label(setup, text='String to check').grid(row=2, column=0, sticky='w')
+        self.string_combo = ttk.Combobox(setup, textvariable=self.string_var, values=STRING_LABELS, state='readonly')
+        self.string_combo.grid(row=2, column=1, columnspan=2, sticky='ew', padx=8)
+        self.string_combo.bind('<<ComboboxSelected>>', lambda _event: self._selection_changed())
+        stages = ttk.Frame(setup)
+        stages.grid(row=3, column=0, columnspan=3, sticky='ew', pady=8)
+        ttk.Radiobutton(stages, text='OPEN string', value='open', variable=self.stage_var, command=self._selection_changed).pack(side='left', padx=(0, 16))
+        ttk.Radiobutton(stages, text='FRET 12 (press the string)', value='fret12', variable=self.stage_var, command=self._selection_changed).pack(side='left')
+        reference = ttk.LabelFrame(root, text='Personal open-pitch reference', padding=10)
+        reference.grid(row=2, column=0, sticky='ew', pady=8)
+        reference.columnconfigure(0, weight=1)
+        ttk.Label(reference, text='Default 0 cents = A440 tuning. Negative is lower. For a game-accepted open pitch 20 cents lower, set -20 for this string. This is a preference, not verified game calibration.', wraplength=760).grid(row=0, column=0, columnspan=3, sticky='ew')
+        ttk.Spinbox(reference, from_=-100, to=100, increment=1, textvariable=self.offset_var, width=7).grid(row=1, column=0, sticky='w', pady=6)
+        ttk.Button(reference, text='Apply reference cents', command=self._apply_reference).grid(row=1, column=1, sticky='w', padx=6)
+        ttk.Button(reference, text='Use this stable open pitch', command=self._use_open_reference).grid(row=2, column=0, columnspan=2, sticky='w')
+        live = ttk.LabelFrame(root, text='Live reading - selected stage stays fixed', padding=10)
+        live.grid(row=3, column=0, sticky='ew')
+        self.tuner_canvas = tk.Canvas(live, height=270, background='#101923', highlightthickness=0, borderwidth=0)
+        self.tuner_canvas.pack(fill='x', expand=True)
+        self.tuner_canvas.bind('<Configure>', self._draw_tuner)
+        ttk.Label(live, textvariable=self.live_detail_var, wraplength=760).pack(anchor='w', pady=6)
+        for row, variable in ((4, self.instruction_var), (5, self.input_status_var), (6, self.preference_status_var)):
+            ttk.Label(root, textvariable=variable, wraplength=760, padding=(0, 4)).grid(row=row, column=0, sticky='ew')
+        self.footer_frame = ttk.Frame(host, padding=(12, 7))
+        self.footer_frame.grid(row=1, column=0, sticky='ew')
+        self.footer_frame.columnconfigure(0, weight=1)
+        buttons = ttk.Frame(self.footer_frame)
+        buttons.grid(row=0, column=0, sticky='ew')
+        self.start_button = ttk.Button(buttons, text='Retry / resume audio', command=self.start_tuning)
+        self.start_button.grid(row=0, column=0, sticky='w', padx=(0, 8))
+        self.stop_button = ttk.Button(buttons, text='Stop listening', command=self.stop_listening)
+        self.stop_button.grid(row=0, column=1, sticky='w')
+        self.return_button = ttk.Button(buttons, text='Return to main', command=self.close)
+        self.return_button.grid(row=1, column=0, columnspan=2, sticky='ew', pady=(6, 0))
+
+    def _tuning_name(self):
+        return TUNING_LABEL_TO_NAME.get(self.tuning_var.get(), DEFAULT_TUNING)
+
+    def _tuning_target(self, number):
+        note = TUNING_PRESETS[self._tuning_name()][6 - number]
+        return (note, frequency_for_note(note))
+
+    def _save_settings(self):
+        try:
+            save_tuner_settings(self.settings)
+            self.preference_status_var.set('Cable identity and per-string references saved for this Windows user.')
+        except Exception as exc:
+            logging.exception('Could not save tuner preferences')
+            self.preference_status_var.set(f'Preferences NOT saved: {exc}')
+
+    def _load_reference_offsets(self):
+        values = self.settings['reference_offsets'].get(self._tuning_name(), {})
+        for number in range(1, 7):
+            self.flow.set_reference_offset(number, values.get(str(number), 0.0))
+        self.offset_var.set(f'{self.flow.reference_offsets[self.flow.string_number]:g}')
+
+    def _on_tuning_changed(self):
+        self.flow.reset()
+        self.settings['tuning'] = self._tuning_name()
+        self._load_reference_offsets()
+        self._save_settings()
+        self._selection_changed()
+
+    def _selection_changed(self):
+        number = 6 - STRING_LABELS.index(self.string_var.get())
+        self.flow.select(number, self.stage_var.get())
+        self.offset_var.set(f'{self.flow.reference_offsets[number]:g}')
+        self._clear_live_reading('PLAY A NOTE: selected string/stage changed; wait for fresh stable readings.')
+        self._retarget_input()
+        self._update_instruction()
+
+    def _clear_live_reading(self, message):
+        self.current_pitch = None
+        self.last_update = None
+        self.last_observed_timestamp = None
+        self.current_live_message = message
+        self.live_detail_var.set(message)
+        self._draw_tuner()
+
+    def _apply_reference(self):
+        try:
+            value = float(self.offset_var.get())
+            number = self.flow.string_number
+            self.flow.set_reference_offset(number, value)
+        except (ValueError, TypeError) as exc:
+            messagebox.showwarning('Reference cents', str(exc), parent=self.window)
+            return
+        self.settings['reference_offsets'].setdefault(self._tuning_name(), {})[str(number)] = value
+        self._save_settings()
+        self._selection_changed()
+
+    def _use_open_reference(self):
+        update = self.last_update
+        if self.flow.stage != 'open' or update is None or update.status not in ('tune_open', 'open_tuned') or (update.measured_frequency_hz is None) or (self.current_pitch is None) or (time.monotonic() - self.current_pitch.timestamp > 0.45):
+            messagebox.showinfo('Open reference', 'Choose OPEN, pluck this string and wait for a stable reading first.', parent=self.window)
+            return
+        _, nominal = self._tuning_target(self.flow.string_number)
+        self.offset_var.set(f'{cents_difference(update.measured_frequency_hz, nominal):.2f}')
+        self._apply_reference()
+
+    def _display_target(self):
+        return self.flow.target_frequency(self._tuning_target(self.flow.string_number)[1])
+
+    def _retarget_input(self):
+        """Guide detection with a preset octave if needed; comparisons still require captured open."""
+        if self.capture is not None:
+            target = self._display_target()
+            if target is None:
+                target = self._tuning_target(self.flow.string_number)[1] * 2.0
+            self.capture.set_expected_frequency(target)
+
+    def refresh_devices(self):
+        if self.closed:
+            return
+        try:
+            devices = enumerate_input_devices()
+            self.devices = devices
+            self.device_map = {device.label: device for device in devices}
+            self.device_combo.configure(values=tuple(self.device_map))
+            current = self.device_map.get(self.device_var.get())
+            preferred = next((d for d in devices if d.name == self.settings['device_name'] and d.hostapi == self.settings['device_hostapi']), None)
+            chosen = current or preferred or preferred_guitar_device(devices)
+            if chosen is None:
+                if self.capture is not None:
+                    self.capture.stop()
+                self.device_var.set('')
+                self._clear_live_reading('INPUT UNAVAILABLE: reconnect the guitar cable.')
+                self.input_status_var.set('Rocksmith guitar cable not listed. Reconnect it and check Windows microphone permission; no unrelated microphone was selected.')
+                return
+            self.device_var.set(chosen.label)
+            if self.settings['device_name'] and preferred is None:
+                self.preference_status_var.set('Saved input is not listed. Using another recognized Rocksmith cable; select explicitly if needed.')
+            elif not any((d.hostapi.casefold() == 'mme' and 'rocksmith gu' in d.name.casefold().replace('rocksmith usb gu', 'rocksmith gu') and ('5-' in d.name) for d in devices)):
+                self.preference_status_var.set('Preferred MME Microphone (5- Rocksmith GU...) is not listed. Check/reconnect that cable if this alternate does not work.')
+            changed_input = self.capture is not None and self.capture.device != chosen
+            if changed_input:
+                self.flow.reset()
+                self._clear_live_reading('Input changed; capture a fresh open reference.')
+            if (changed_input or not self._audio_active()) and (not self.paused):
+                self.start_tuning()
+        except Exception as exc:
+            logging.exception('Could not enumerate guitar cable')
+            self.input_status_var.set(f'Input discovery failed: {exc}')
+
+    def _device_selected(self, _event=None):
+        device = self.device_map.get(self.device_var.get())
+        if device is None:
+            return
+        self.settings['device_name'] = device.name
+        self.settings['device_hostapi'] = device.hostapi
+        self._save_settings()
+        self.flow.reset()
+        self._pending_input_label = ''
+        self.paused = False
+        self.start_tuning()
+
+    def _discover_missing_cable(self):
+        self.discovery_id = None
+        if self.closed:
+            return
+        if not self.paused and (not self.device_var.get()):
+            self.refresh_devices()
+        self.discovery_id = self.window.after(5000, self._discover_missing_cable)
+
+    def _audio_active(self):
+        return self.capture is not None and self.capture.status not in ('Stopped', 'Input error')
+
+    def start_tuning(self):
+        if self.closed:
+            return
+        self.paused = False
+        device = self.device_map.get(self._pending_input_label) or self.device_map.get(self.device_var.get())
+        if self.capture is not None:
+            self.capture.stop()
+            self.capture.join(timeout=1.5)
+            if self.capture.is_alive:
+                self._pending_input_label = device.label if device is not None else ''
+                self.device_var.set(self.capture.device.label)
+                self._clear_live_reading('Previous input is still stopping; no new reading is available.')
+                self.input_status_var.set('Previous input is still stopping. Wait, then retry; no second audio stream was opened.')
+                return
+        if self.poll_id is not None:
+            self.window.after_cancel(self.poll_id)
+            self.poll_id = None
+        if device is None:
+            self._clear_live_reading('INPUT UNAVAILABLE: select a detected guitar cable.')
+            self.input_status_var.set('Select a detected guitar cable first.')
+            return
+        target = self._display_target() or self._tuning_target(self.flow.string_number)[1] * 2.0
+        self.flow.select(self.flow.string_number, self.flow.stage)
+        self._clear_live_reading('Opening input; wait for three fresh stable readings.')
+        self._pending_input_label = ''
+        self.device_var.set(device.label)
+        self.capture = WaveformPitchInput(device, expected_frequency_hz=target)
+        logging.info('Tuner input start: name=%s hostapi=%s string=%s stage=%s target=%s', device.name, device.hostapi, self.flow.string_number, self.flow.stage, target)
+        self.capture.start()
+        self.input_status_var.set('Opening selected input in shared mode; Rocksmith may remain running.')
+        self._poll_input()
+
+    def stop_listening(self):
+        self.paused = True
+        if self.capture is not None:
+            self.capture.stop()
+        self.flow.select(self.flow.string_number, self.flow.stage)
+        self._clear_live_reading('LISTENING PAUSED')
+        self.input_status_var.set('Listening paused. Retry / resume starts the selected cable again.')
+        self._draw_tuner()
+
+    def _poll_input(self):
+        self.poll_id = None
+        if self.closed or self.capture is None:
+            return
+        capture = self.capture
+        status = capture.status
+        if capture.error or status == 'Input error':
+            self._clear_live_reading('INPUT UNAVAILABLE')
+            self.input_status_var.set(capture.error or 'Input unavailable; refresh devices or retry.')
+        elif status == 'Stopped':
+            self._clear_live_reading('LISTENING PAUSED' if self.paused else 'INPUT STOPPED')
+            if not self.paused:
+                self.input_status_var.set('Input stopped. Refresh the cable or retry audio.')
+        else:
+            self.input_status_var.set(status)
+            latest = capture.latest
+            if not self.paused and latest is not None and (latest.timestamp + 0.45 >= time.monotonic()):
+                if self.last_observed_timestamp is None or latest.timestamp > self.last_observed_timestamp:
+                    self.current_pitch = latest
+                    self.last_observed_timestamp = latest.timestamp
+                    self.last_update = self.flow.observe(latest, self._tuning_target(self.flow.string_number)[1])
+                    self._update_live_detail(self.last_update)
+            else:
+                self._clear_live_reading('LISTENING PAUSED' if self.paused else 'PLAY ONE STRING: wait for fresh stable readings.')
+            self._update_instruction()
+        self._draw_tuner()
+        if status not in ('Stopped', 'Input error'):
+            self.poll_id = self.window.after(100, self._poll_input)
+
+    def _update_instruction(self):
+        number, stage = self.flow.current_step
+        note, nominal = self._tuning_target(number)
+        offset = self.flow.reference_offsets[number]
+        if stage == 'open':
+            captured = self.flow.measurements[number].get('open')
+            state = f'Captured {captured:.2f} Hz. Choose FRET 12 when ready.' if captured else 'Pluck open and settle within +/-5 cents to capture the reference.'
+            text = f'SELECTED: String {number} OPEN - {note}, personal offset {offset:+g} cents. {state} Stage never changes automatically.'
+        else:
+            target = self._display_target()
+            text = f'SELECTED: String {number} FRET 12 - press at fret 12 with normal playing pressure. Target {target:.2f} Hz = twice captured open. If sharp, lengthen the saddle speaking length; if flat, shorten it. Retune OPEN after adjustment and recheck.' if target else f"SELECTED: String {number} FRET 12. Capture this string's OPEN reference first; no intonation result until then."
+        self.instruction_var.set(text)
+
+    def _update_live_detail(self, update):
+        messages = {'wrong_octave': 'Wrong octave detected. Check chosen string and OPEN / FRET 12; do not retune by an octave.', 'out_of_range': 'Pitch outside this string/stage range. Check selection; no adjustment cue.', 'missing_open_reference': 'Choose OPEN and capture a stable reference first.', 'invalid_pitch': 'Pitch unclear. Pluck one string cleanly and let it settle.', 'clipped': 'Input clipping. Lower Windows input level and pluck again.', 'unstable': 'Pitch moving. Let the note settle before comparing.', 'waiting': 'Waiting for three fresh, stable readings.'}
+        if update.status in messages:
+            self.current_live_message = messages[update.status]
+            self.live_detail_var.set(messages[update.status])
+            return
+        cents = update.cents_from_target
+        _, action = tuner_adjustment(cents, 5)
+        if self.flow.stage == 'open':
+            self.live_detail_var.set(f'Open pitch: {cents:+.1f} cents from your chosen reference. {action}. ' + ('Reference captured; manually choose FRET 12.' if update.status == 'open_tuned' else 'Adjust the open-string tuning.'))
+        else:
+            guidance = 'Intonation matches the captured open octave.' if abs(cents) <= 5 else 'Lengthen saddle speaking length, then retune open.' if cents > 0 else 'Shorten saddle speaking length, then retune open.'
+            self.live_detail_var.set(f'12th-fret intonation error {cents:+.1f} cents. {guidance}')
+
+    def _live_comparison(self):
+        number, stage = self.flow.current_step
+        target = self._display_target()
+        pitch = self.current_pitch
+        cents = None
+        state = 'WAITING'
+        band = 'neutral'
+        update = self.last_update
+        if pitch is not None and target is not None:
+            raw = cents_difference(pitch.frequency_hz, target)
+            accepted = update is not None and update.status in ('tune_open', 'open_tuned', 'tune_fret12', 'fret12_measured')
+            if accepted and update.cents_from_target is not None and not pitch.clipped and pitch.confidence >= 0.65 and (abs(raw) <= 100):
+                cents = update.cents_from_target
+                state = pitch_state(cents, 5)
+                band = pitch_band(cents, 5)
+            elif pitch.clipped or pitch.confidence < 0.65 or abs(raw) > 100:
+                state = 'CHECK STRING / STAGE'
+            else:
+                state = 'WAIT FOR STABLE NOTE'
+        elif target is None:
+            state = 'CAPTURE OPEN FIRST'
+        return {'pitch': pitch, 'measured': update.measured_frequency_hz if cents is not None else None, 'note': pitch.note_name if pitch else self.current_live_message, 'cents': cents, 'target': target, 'string': STRING_LABELS[6 - number], 'stage': stage, 'state': state, 'band': band}
+
+    def _draw_tuner(self, _event=None):
+        canvas = self.tuner_canvas
+        if not canvas.winfo_exists():
+            return
+        canvas.delete('all')
+        width = max(260, canvas.winfo_width())
+        reading = self._live_comparison()
+        colors = {'green': TUNER_COLOR_GREEN, 'amber': TUNER_COLOR_AMBER, 'red': TUNER_COLOR_RED, 'neutral': TUNER_COLOR_NEUTRAL}
+        color = colors[reading['band']]
+        center = width / 2
+        stage = 'OPEN STRING' if reading['stage'] == 'open' else 'FRETTED AT 12'
+        canvas.create_text(14, 18, anchor='w', text=f"{reading['string']} | {stage}", fill='#d7e3ef', font=('Segoe UI', 12, 'bold'))
+        note = reading['pitch'].note_name if reading['pitch'] else 'PLUCK SELECTED STRING'
+        canvas.create_text(center, 60, text=note, fill=color, font=('Segoe UI', 28, 'bold'))
+        canvas.create_text(center, 99, text=reading['state'], fill=color, font=('Segoe UI', 12, 'bold'))
+        if reading['cents'] is not None:
+            canvas.create_text(center, 124, text=f"{reading['measured']:.2f} Hz | {reading['cents']:+.1f} cents (+ sharp / - flat)", fill='#f3f6fa', font=('Segoe UI', 10))
+        arrow, action = tuner_adjustment(reading['cents'], 5)
+        canvas.create_text(center, 164, text=arrow, fill=color, font=('Segoe UI', 38, 'bold'))
+        canvas.create_text(center, 204, text=action, fill=color, font=('Segoe UI', 12, 'bold'))
+        if reading['target'] is not None:
+            canvas.create_text(center, 241, text=f"Target {reading['target']:.2f} Hz  |  < lower     > higher", fill='#b7c6d7', font=('Segoe UI', 10))
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        for token in (self.poll_id, self.discovery_id, getattr(self, "startup_id", None)):
+            if token is not None:
+                try:
+                    self.window.after_cancel(token)
+                except tk.TclError:
+                    pass
+        self.poll_id = None
+        self.discovery_id = None
+        if self.capture is not None:
+            try:
+                self.capture.stop()
+                self.capture.join(timeout=1.5)
+            except Exception:
+                logging.exception('Could not stop tuner capture on close')
+        try:
+            if self.window.winfo_exists():
+                self.window.destroy()
+        except tk.TclError:
+            pass

@@ -1,0 +1,877 @@
+diff --git a/DLL/D3DOverlay.cpp b/DLL/D3DOverlay.cpp
+index f13894e..4f97c66 100644
+--- a/DLL/D3DOverlay.cpp
++++ b/DLL/D3DOverlay.cpp
+@@ -1,5 +1,6 @@
+ #include "stdafx.h"
+ #include "D3DOverlay.hpp"
++#include <mutex>
+ 
+ namespace Setting = Settings::Setting;
+ 
+@@ -303,6 +304,24 @@ void GameOverlay::DisplaySongAccuracy() {
+ 			pDevice,
+ 			{ NULL, NULL },
+ 			DT_RIGHT | DT_NOCLIP);
++
++		const float speedPercent = currentSongSpeedPercent.load(std::memory_order_relaxed);
++		std::stringstream speedStream;
++		speedStream << "Speed: ";
++		if (speedPercent >= 25.0f && speedPercent <= 1600.0f) {
++			speedStream << std::fixed << std::setprecision(0) << speedPercent << "%";
++		}
++		else {
++			speedStream << "--";
++		}
++		const int lineHeight = cachedFont
++			? MeasureLineHeight(cachedFont, accuracyText, baseRect, DT_RIGHT | DT_NOCLIP)
++			: (std::max)(1, static_cast<int>(WindowSize.height / 54.0f));
++		const int speedTop = top + lineHeight;
++		DX9DrawText(speedStream.str(), whiteText,
++			static_cast<int>(WindowSize.width - WindowSize.width / 5.0f), speedTop,
++			right, speedTop + lineHeight,
++			pDevice, { NULL, NULL }, DT_RIGHT | DT_NOCLIP);
+ 	}
+ }
+ 
+@@ -342,6 +361,49 @@ void GameOverlay::OnResetDevice() {
+ 	fontCache.OnResetDevice();
+ }
+ 
++namespace {
++    std::mutex songRemovalStatusMutex;
++    std::string songRemovalStatus;
++    ULONGLONG songRemovalStatusUntil = 0;
++    bool songRemovalStatusFailed = false;
++}
++
++void GameOverlay::SetSongRemovalStatus(const std::string& message, bool failed) {
++    std::lock_guard<std::mutex> lock(songRemovalStatusMutex);
++    songRemovalStatus = message.substr(0, 256);
++    songRemovalStatusFailed = failed;
++    songRemovalStatusUntil = GetTickCount64() + 10000;
++}
++
++void GameOverlay::DisplaySongRemovalHint() {
++    // Native rendering only reads this bounded mailbox; filesystem work stays in the key handler.
++    std::string message;
++    bool failed = false;
++    {
++        std::lock_guard<std::mutex> lock(songRemovalStatusMutex);
++        if (GetTickCount64() < songRemovalStatusUntil) {
++            message = songRemovalStatus;
++            failed = songRemovalStatusFailed;
++        }
++    }
++    if (message.empty()) {
++        if (GameState::IsInSong() || !Settings::IsOn(Setting::ShowSongRemovalHint)) return;
++        std::string key = Settings::ReturnSettingValue(Setting::Key::SongRemovalRequest);
++        if (key.rfind("VK_", 0) == 0) key.erase(0, 3);
++        message = "Jons: " + key + " - mark previewed song for removal review";
++        message += "\nSong list only; enable song previews and select the song. Review after Rocksmith closes.";
++    }
++    const int fontHeight = static_cast<int>(std::max(14u, std::min(24u, WindowSize.height / 40u)));
++    const int x = WindowSize.width / 30;
++    const int y = WindowSize.height / 10;
++    const int right = WindowSize.width - x;
++    const int bottom = y + fontHeight * 5;
++    const Resolution fontSize{ 0u, static_cast<unsigned int>(fontHeight) };
++    const DWORD format = DT_LEFT | DT_WORDBREAK;
++    DX9DrawText(message, 0xFF000000, x + 2, y + 2, right + 2, bottom + 2, pDevice, fontSize, format);
++    DX9DrawText(message, failed ? 0xFFFFBC70 : 0xFFFFFFFF, x, y, right, bottom, pDevice, fontSize, format);
++}
++
+ void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
+ 	// Draw text on screen
+ 	// NOTE: NEVER USE SET VALUES. Always do division of WindowSize width AND heigh so every resolution should have the text in around the same spot.
+@@ -357,7 +419,8 @@ void GameOverlay::RenderOverlay(IDirect3DDevice9* device) {
+ 		DisplayCurrentNote();
+ 		DisplayCurrentTuningForAutoTune();
+ 		DisplaySongAccuracy();
++		DisplaySongRemovalHint();
+ 
+ 		HandleLooping();
+ 	}
+-}
+\ No newline at end of file
++}
+diff --git a/DLL/D3DOverlay.hpp b/DLL/D3DOverlay.hpp
+index e09195c..9d4d120 100644
+--- a/DLL/D3DOverlay.hpp
++++ b/DLL/D3DOverlay.hpp
+@@ -9,6 +9,7 @@
+ #include "Keybindings.hpp"
+ #include "NoteData.h"
+ #include "GameState.hpp"
++#include <atomic>
+ 
+ namespace GameOverlay {
+ 	Resolution GetWindowSize();
+@@ -30,6 +31,9 @@ namespace GameOverlay {
+ 	void DisplayCurrentTuningForAutoTune();
+ 	void DisplayLoopStartEndTimes(float loopStart, float loopEnd);
+ 	void DisplaySongAccuracy();
++	void DisplaySongRemovalHint();
++	void SetSongRemovalStatus(const std::string& message, bool failed = false);
++	inline std::atomic<float> currentSongSpeedPercent{ -1.0f };
+ 	void CheckCurrentFont();
+ 	void RenderOverlay(IDirect3DDevice9* pDevice);
+   void OnLostDevice();
+@@ -125,4 +129,4 @@ namespace GameOverlay {
+ 	};
+ 
+ 	inline static FontCache fontCache;
+-}
+\ No newline at end of file
++}
+diff --git a/DLL/GameState.cpp b/DLL/GameState.cpp
+index 77e546a..3cd575c 100644
+--- a/DLL/GameState.cpp
++++ b/DLL/GameState.cpp
+@@ -1,6 +1,25 @@
+ #include "stdafx.h"
+ #include "GameState.hpp"
+ 
++namespace {
++	template <size_t Capacity>
++	std::string ReadBoundedGameString(uintptr_t pointer) {
++		if (!pointer) return {};
++		MEMORY_BASIC_INFORMATION memory{};
++		if (!VirtualQuery(reinterpret_cast<const void*>(pointer), &memory, sizeof(memory))
++			|| memory.State != MEM_COMMIT || (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return {};
++		const uintptr_t regionEnd = reinterpret_cast<uintptr_t>(memory.BaseAddress) + memory.RegionSize;
++		if (regionEnd <= pointer) return {};
++		const SIZE_T count = std::min(static_cast<SIZE_T>(Capacity), static_cast<SIZE_T>(regionEnd - pointer));
++		char buffer[Capacity]{};
++		SIZE_T copied = 0;
++		if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(pointer), buffer, count, &copied)
++			|| copied != count) return {};
++		const char* end = static_cast<const char*>(memchr(buffer, '\0', copied));
++		return end ? std::string(buffer, static_cast<size_t>(end - buffer)) : std::string{};
++	}
++}
++
+ /// <summary>
+ /// Are we in a song?
+ /// </summary>
+@@ -26,40 +45,31 @@ bool GameState::IsMultiplayer() {
+ /// </summary>
+ /// <returns>Profile Name</returns>
+ std::string GameState::CurrentSelectedUser() {
+-	uintptr_t badValue = MemUtil::FindDMAAddy(Offsets::baseHandle + Offsets::ptr_selectedProfileName, Offsets::ptr_selectedProfileNameOffsets);
+-
+-	// If the pointer is invalid just return nothing
+-	if (!badValue) {
+-		LOG_ERROR("Invalid Pointer: CurrentSelectedUser" << std::endl);
+-		return (std::string)"";
+-	}
+-
+-	// This value 90% of the time starts with an invalid pointer. We must wait ~2.5 seconds to guarantee that it is correct, or until the pointer changes (whichever comes first).
+-	for (int i = 0; i < 25; i++)
+-	{
+-		if (badValue >= 0x10000000)
+-			break;
+-
+-		badValue = MemUtil::FindDMAAddy(Offsets::baseHandle + Offsets::ptr_selectedProfileName, Offsets::ptr_selectedProfileNameOffsets);
+-	}
+-
+-	return std::string((const char*)badValue);
++	const uintptr_t pointer = MemUtil::FindDMAAddy(Offsets::baseHandle + Offsets::ptr_selectedProfileName, Offsets::ptr_selectedProfileNameOffsets);
++	return ReadBoundedGameString<512>(pointer);
+ }
+ 
+-bool IsSongKeyStringValid(const char* str, size_t max_len)
+-{
+-	if (!str)
+-		return false;
+-
+-	if (MemUtil::IsBadReadPtr((void*)str))
+-		return false;
+-
+-	size_t strLen = strlen(str);
+-	if (strLen <= 13 || strLen > max_len)
+-		return false;
+-
+-	std::string_view sv(str, strLen);
+-	return sv.starts_with("Play_");
++namespace {
++	std::string ReadCurrentPreviewSongKey(bool allowDisabledPreview) {
++		const uintptr_t pointer = MemUtil::FindDMAAddy(Offsets::baseHandle + Offsets::ptr_previewName, Offsets::ptr_previewNameOffsets);
++		if (!pointer) return {};
++		// Copy a bounded event through the OS so a stale or unterminated game string
++		// cannot make strlen/std::string walk arbitrary memory. Long CDLC keys are valid.
++		const std::string event = ReadBoundedGameString<160>(pointer);
++		const std::string_view name(event);
++		constexpr std::string_view prefix = "Play_";
++		constexpr std::string_view previewSuffix = "_Preview";
++		constexpr std::string_view disabledSuffix = "_Invalid";
++		if (!name.starts_with(prefix)) return {};
++		const bool preview = name.ends_with(previewSuffix);
++		if (!preview && !(allowDisabledPreview && name.ends_with(disabledSuffix))) return {};
++		const size_t suffixSize = preview ? previewSuffix.size() : disabledSuffix.size();
++		if (name.size() <= prefix.size() + suffixSize) return {};
++		const std::string songKey(name.substr(prefix.size(), name.size() - prefix.size() - suffixSize));
++		if (songKey.size() > 128 || songKey.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") != std::string::npos)
++			return {};
++		return songKey;
++	}
+ }
+ 
+ /// <summary>
+@@ -67,30 +77,19 @@ bool IsSongKeyStringValid(const char* str, size_t max_len)
+ /// </summary>
+ /// <returns>Last played Song Key</returns>
+ std::string GameState::GetSongKey() {
+-	uintptr_t previewEventPtr = MemUtil::FindDMAAddy(Offsets::baseHandle + Offsets::ptr_previewName, Offsets::ptr_previewNameOffsets);
+-
+-	if (previewEventPtr) {
+-		const char* previewEvent = (char*)previewEventPtr;
+-
+-		// Check if it's null terminated within a reasonable number of bytes
+-		if (IsSongKeyStringValid(previewEvent, 50))
+-		{
+-			auto previewName = std::string(previewEvent);
+-
+-			// If the preview name contains "Play_", which is required by Wwise.
+-			if (previewName.length() > 13 && previewName._Starts_with("Play_")) {
+-
+-				// Verify that we are working with a "_Preview" audio.
+-				// "_Invalid" is used when the user turns off their song previews.
+-				if (previewName.compare(previewName.length() - 9, 9, "_Preview") || previewName.compare(previewName.length() - 9, 9, "_Invalid")) {
+-					lastSongKey = previewName.substr(5, previewName.length() - 13);
+-				}
+-			}
+-		}
+-	}
++	const std::string currentKey = ReadCurrentPreviewSongKey(true);
++	if (!currentKey.empty()) lastSongKey = currentKey;
+ 	return lastSongKey;
+ }
+ 
++/// <summary>
++/// Read only the currently previewed song key. Unlike GetSongKey(), this never returns a cached key
++/// and rejects disabled/invalid preview events, so callers cannot mistake the previous song for the selection.
++/// </summary>
++std::string GameState::GetPreviewSongKey() {
++	return ReadCurrentPreviewSongKey(false);
++}
++
+ /// <param name="GameNotLoaded"> - Should we trust the pointer?</param>
+ /// <returns>Internal Menu Name</returns>
+ std::string GameState::GetCurrentMenu(bool GameNotLoaded) {
+@@ -221,4 +220,4 @@ namespace GameState {
+ 
+ bool Contains(std::string_view text, std::string_view key) {
+ 	return text.find(key) != std::string_view::npos;
+-}
+\ No newline at end of file
++}
+diff --git a/DLL/GameState.hpp b/DLL/GameState.hpp
+index 68363ea..ea84fb4 100644
+--- a/DLL/GameState.hpp
++++ b/DLL/GameState.hpp
+@@ -28,6 +28,7 @@ namespace GameState {
+ 	bool IsMultiplayer();
+ 	std::string CurrentSelectedUser();
+ 	std::string GetSongKey();
++	std::string GetPreviewSongKey();
+ 
+ 	inline std::string lastSongKey = "";
+ 
+diff --git a/DLL/Keybindings.cpp b/DLL/Keybindings.cpp
+index 46cf50a..135119a 100644
+--- a/DLL/Keybindings.cpp
++++ b/DLL/Keybindings.cpp
+@@ -1,7 +1,121 @@
+ #include "stdafx.h"
+ #include "Keybindings.hpp"
++#include "D3DOverlay.hpp"
+ 
+ namespace {
++	std::atomic_uint32_t g_songRemovalRequestSequence{ 0 };
++
++	bool WriteSongRemovalRequest(const std::string& songKey) {
++        GameOverlay::SetSongRemovalStatus("Could not save removal mark. Check the RSMods log and saved marks folder. No song moved.", true);
++        // SongKey is also used as a filename: accept only the bridge's safe ASCII alphabet.
++        if (songKey.empty() || songKey.size() > 128 ||
++            !std::all_of(songKey.begin(), songKey.end(), [](unsigned char value) {
++                return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
++                    || (value >= '0' && value <= '9') || value == '_' || value == '.' || value == '-';
++            })) {
++            LOG_ERROR("[JonsRockSmithMods] Unsafe SongKey; song mark not saved" << std::endl);
++            return false;
++        }
++		DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
++		if (required == 0 || required > 32768) {
++			LOG_ERROR("[JonsRockSmithMods] LOCALAPPDATA unavailable; in-game song request was not sent" << std::endl);
++			return false;
++		}
++		std::wstring localAppData(required, L'\0');
++		DWORD copied = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData.data(), required);
++		if (copied == 0 || copied >= required) {
++			LOG_ERROR("[JonsRockSmithMods] Could not read LOCALAPPDATA; in-game song request was not sent" << std::endl);
++			return false;
++		}
++		localAppData.resize(copied);
++
++		std::error_code directoryError;
++		const auto directory = std::filesystem::path(localAppData) / L"JonsRockSmithMods" / L"InGameSongRequests";
++		std::filesystem::create_directories(directory, directoryError);
++		if (directoryError) {
++			LOG_ERROR("[JonsRockSmithMods] Could not create in-game request folder: " << directoryError.message() << std::endl);
++			return false;
++		}
++
++        // Marks remain until acknowledged. Repeated presses share one case-insensitive identity.
++        std::string canonicalSongKey = songKey;
++        for (char& value : canonicalSongKey) {
++            if (value >= 'A' && value <= 'Z') value = static_cast<char>(value + ('a' - 'A'));
++        }
++        const std::string requestId = "song-" + canonicalSongKey;
++        const std::wstring wideRequestId(requestId.begin(), requestId.end());
++        const auto requestPath = directory / (L"request-" + wideRequestId + L".json");
++        if (std::filesystem::exists(requestPath, directoryError)) {
++            LOG_INFO("[JonsRockSmithMods] Song already marked for later review: " << songKey << std::endl);
++            GameOverlay::SetSongRemovalStatus("Already saved: " + songKey + "\nReview saved marks in the companion after Rocksmith closes. Packs affect all tracks.");
++            return !directoryError;
++        }
++        size_t requestCount = 0;
++        for (std::filesystem::directory_iterator entry(directory, directoryError), end;
++            !directoryError && entry != end; entry.increment(directoryError)) {
++            const auto name = entry->path().filename().wstring();
++            if (name.rfind(L"request-", 0) == 0 && entry->path().extension() == L".json") {
++                if (++requestCount >= 64) break;
++            }
++        }
++        if (directoryError || requestCount >= 64) {
++            LOG_ERROR("[JonsRockSmithMods] Saved song marks full or unreadable; review them in the companion app" << std::endl);
++            GameOverlay::SetSongRemovalStatus("Mark not saved: saved marks are full or unreadable. Review saved marks in the companion.", true);
++            return false;
++        }
++
++		const auto sequence = g_songRemovalRequestSequence.fetch_add(1, std::memory_order_relaxed);
++		const auto capturedAt = std::chrono::duration_cast<std::chrono::milliseconds>(
++			std::chrono::system_clock::now().time_since_epoch()).count();
++        const std::wstring temporaryId = std::to_wstring(GetCurrentProcessId()) + L"-"
++            + std::to_wstring(GetTickCount64()) + L"-" + std::to_wstring(sequence);
++		const auto temporaryPath = directory / (L".pending-" + temporaryId + L".tmp");
++		const std::string json = "{\"version\":1,\"request_id\":\"" + requestId
++			+ "\",\"song_key\":\"" + songKey + "\",\"captured_at_unix_ms\":"
++			+ std::to_string(capturedAt) + "}";
++
++		HANDLE file = CreateFileW(temporaryPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
++			FILE_ATTRIBUTE_NORMAL, nullptr);
++		if (file == INVALID_HANDLE_VALUE) {
++			LOG_ERROR("[JonsRockSmithMods] Could not create in-game request file; request not sent" << std::endl);
++			return false;
++		}
++		DWORD written = 0;
++		const bool wroteAll = WriteFile(file, json.data(), static_cast<DWORD>(json.size()), &written, nullptr)
++			&& written == static_cast<DWORD>(json.size()) && FlushFileBuffers(file);
++		CloseHandle(file);
++		if (!wroteAll || !MoveFileExW(temporaryPath.c_str(), requestPath.c_str(), MOVEFILE_WRITE_THROUGH)) {
++			DeleteFileW(temporaryPath.c_str());
++			LOG_ERROR("[JonsRockSmithMods] Could not publish in-game request; request not sent" << std::endl);
++			return false;
++		}
++		LOG_INFO("[JonsRockSmithMods] Song marked for later reversible removal review: " << songKey << std::endl);
++        GameOverlay::SetSongRemovalStatus("Saved removal mark: " + songKey + "\nNo song moved yet. Review in the companion after Rocksmith closes. Packs affect all tracks.");
++		return true;
++	}
++
++	void RequestPreviewedSongRemoval() {
++		if (!GameState::GameLoaded || GameState::IsInSong()) {
++			LOG_INFO("[JonsRockSmithMods] Song removal hotkey ignored outside song-list menus" << std::endl);
++            GameOverlay::SetSongRemovalStatus("Return to the song list, enable song previews, select a song, then press the mark key. No song marked.", true);
++			return;
++		}
++        const std::string captureMenu = GameState::GetCurrentMenu();
++		const std::string songKey = GameState::GetPreviewSongKey();
++		if (songKey.empty()) {
++			LOG_INFO("[JonsRockSmithMods] No current preview SongKey; enable song previews and select a song first" << std::endl);
++            GameOverlay::SetSongRemovalStatus("No current song preview. Enable song previews and select the song again; no mark saved.", true);
++			return;
++		}
++        // Re-read the live preview immediately before capture; never use cached GetSongKey().
++        if (GameState::IsInSong() || GameState::GetCurrentMenu() != captureMenu
++            || GameState::GetPreviewSongKey() != songKey) {
++            GameOverlay::SetSongRemovalStatus("Song selection changed. Select it again and retry; no mark saved.", true);
++            return;
++        }
++        WriteSongRemovalRequest(songKey);
++	}
++
+ 	Framework::KeyEvent CaptureKeyEvent(WPARAM keyPressed, LPARAM lParam, Framework::KeyEdge edge) {
+ 		Framework::KeyEvent event;
+ 		event.virtualKey = static_cast<std::uint32_t>(keyPressed);
+@@ -30,6 +144,11 @@ namespace Keybindings {
+ 		commands.SetKeyResolver([](std::string_view setting) {
+ 			return Settings::GetKeyBind(std::string(setting));
+ 		});
++		commands.BindSetting(nullptr, Settings::Setting::Key::SongRemovalRequest, Framework::KeyEdge::Up,
++			Framework::Availability::Initialized,
++			[](Framework::ModContext&, const Framework::KeyEvent&) {
++				RequestPreviewedSongRemoval();
++			}, {}, "Request reversible removal of the currently previewed song archive");
+ 		commands.BindKey(nullptr, "ReloadSettings", 'A', Framework::KeyEdge::Up,
+ 			Framework::Availability::Initialized,
+ 			[](Framework::ModContext&, const Framework::KeyEvent&) {
+diff --git a/DLL/Mods/AutoLoadProfileMod.cpp b/DLL/Mods/AutoLoadProfileMod.cpp
+index f1aa250..7a27980 100644
+--- a/DLL/Mods/AutoLoadProfileMod.cpp
++++ b/DLL/Mods/AutoLoadProfileMod.cpp
+@@ -35,15 +35,19 @@ void AutoLoadProfileMod::OnTick(ModContext& c) {
+ // Walk the profile list until the pinned profile is highlighted (then enter), or give up if it is missing.
+ void AutoLoadProfileMod::LoadSpecificProfile(ModContext& c) {
+ 	const std::string selectedUser = GameState::CurrentSelectedUser();
++	// The profile-name pointer is often not ready on the first profile-select tick.
++	// Wait for a readable name; do not advance blindly and skip the requested user.
++	if (selectedUser.empty()) return;
+ 
+ 	if (selectedUser == c.Value(Setting::ProfileToLoad)) {
+ 		Keyboard::AutoEnterGame();
+ 	}
+-	else if (selectedUser == "New profile") {
++	else if (selectedUser == "New profile" || profileSearchSteps >= 128) {
+ 		LOG_ERROR("(Auto Load) Invalid Profile Name" << std::endl); // The profile they're looking for doesn't exist :(
+ 		requestedProfileMissing = true;
+ 	}
+ 	else { // Not our profile yet. Move down one.
++		++profileSearchSteps;
+ 		Keyboard::PressDownArrowKey();
+ 	}
+ }
+diff --git a/DLL/Mods/AutoLoadProfileMod.hpp b/DLL/Mods/AutoLoadProfileMod.hpp
+index 3ed996c..e1a1b94 100644
+--- a/DLL/Mods/AutoLoadProfileMod.hpp
++++ b/DLL/Mods/AutoLoadProfileMod.hpp
+@@ -17,4 +17,5 @@ private:
+ 
+ 	// Latches once the pinned profile turns out not to exist, so we stop cycling the list forever.
+ 	bool requestedProfileMissing = false;
++	unsigned int profileSearchSteps = 0;
+ };
+diff --git a/DLL/Mods/RiffRepeaterMod.cpp b/DLL/Mods/RiffRepeaterMod.cpp
+index a86f726..3b53e93 100644
+--- a/DLL/Mods/RiffRepeaterMod.cpp
++++ b/DLL/Mods/RiffRepeaterMod.cpp
+@@ -1,5 +1,29 @@
+ #include "../stdafx.h"
+ #include "RiffRepeaterMod.hpp"
++#include "../D3DOverlay.hpp"
++
++#include <cmath>
++
++namespace {
++	std::string CanonicalSongKey(std::string key) {
++		std::transform(key.begin(), key.end(), key.begin(), [](unsigned char character) {
++			return character >= 'A' && character <= 'Z' ? static_cast<char>(character + ('a' - 'A'))
++				: static_cast<char>(character);
++		});
++		return key;
++	}
++
++	int ParseFixedSpeedPercent(const char* text) {
++		if (!text || !*text) return 0;
++		int result = 0;
++		int digits = 0;
++		for (const char* character = text; *character; ++character) {
++			if (*character < '0' || *character > '9' || ++digits > 3) return 0;
++			result = result * 10 + (*character - '0');
++		}
++		return result >= 25 && result <= 400 ? result : 0;
++	}
++}
+ 
+ using Framework::ModContext;
+ using Framework::KeyEdge;
+@@ -8,6 +32,7 @@ using Framework::KeyEvent;
+ namespace Setting = Settings::Setting;
+ 
+ void RiffRepeaterMod::OnInitialize(ModContext& c) {
++	RefreshFixedSpeedConfig(true);
+ 	c.Commands().BindSetting(
+ 		Setting::Key::Rewind,
+ 		KeyEdge::Up,
+@@ -41,7 +66,7 @@ void RiffRepeaterMod::OnInitialize(ModContext& c) {
+ 		Setting::Key::RRSpeed,
+ 		KeyEdge::Down,
+ 		Availability::Active,
+-		[](ModContext& context, const KeyEvent& event) { ChangeSpeed(context, event); },
++		[this](ModContext& context, const KeyEvent& event) { ChangeSpeed(context, event); },
+ 		[](const ModContext& context, const KeyEvent&) {
+ 			return context.IsOn(Setting::RRSpeedAboveOneHundred) &&
+ 				GameState::Menus::IsInModesWithAllowedFastRiffRepeater() &&
+@@ -81,6 +106,7 @@ void RiffRepeaterMod::SetLoopEnd(const KeyEvent& event) {
+ }
+ 
+ void RiffRepeaterMod::ChangeSpeed(const ModContext& c, const KeyEvent& event) {
++	if (RequestedFixedSpeedPercent() != 0) return;
+ 	const float interval = static_cast<float>(c.Int(Setting::RRSpeedInterval));
+ 
+ 	float realSongSpeed = RiffRepeater::GetSpeed(true);
+@@ -95,9 +121,76 @@ void RiffRepeaterMod::ChangeSpeed(const ModContext& c, const KeyEvent& event) {
+ }
+ 
+ void RiffRepeaterMod::OnTick(ModContext& c) {
++	RefreshFixedSpeedConfig(false);
+ 	SyncLinearSpeeds(c);
+ }
+ 
++// This separate INI is atomically replaced by the companion app. Poll no more than once a
++// second, and parse only after its timestamp or size changes; never reload every song tick.
++void RiffRepeaterMod::RefreshFixedSpeedConfig(bool force) {
++	const auto now = std::chrono::steady_clock::now();
++	if (!force && now < nextFixedSpeedConfigPoll) return;
++	nextFixedSpeedConfigPoll = now + std::chrono::seconds(1);
++	const std::filesystem::path path("JonsRockSmithMods.ini");
++	std::error_code error;
++	const auto status = std::filesystem::symlink_status(path, error);
++	if (error || !std::filesystem::is_regular_file(status) || std::filesystem::is_symlink(status)) {
++		fixedGlobalSpeedEnabled = false;
++		songSpeedOverrides.clear();
++		fixedSpeedConfigSeen = false;
++		return;
++	}
++	const auto writeTime = std::filesystem::last_write_time(path, error);
++	if (error) return;
++	const auto size = std::filesystem::file_size(path, error);
++	if (error) return;
++	if (!force && fixedSpeedConfigSeen && writeTime == fixedSpeedConfigWriteTime && size == fixedSpeedConfigSize)
++		return;
++	fixedSpeedConfigWriteTime = writeTime;
++	fixedSpeedConfigSize = size;
++	fixedSpeedConfigSeen = true;
++	// Fail closed for malformed/oversized settings, with bounded work and logging.
++	fixedGlobalSpeedEnabled = false;
++	songSpeedOverrides.clear();
++	if (size > 1024 * 1024) {
++		LOG_ERROR("JonsRockSmithMods SPEED_CONFIG_REJECTED file exceeds 1 MB" << std::endl);
++		return;
++	}
++	CSimpleIniA reader;
++	if (reader.LoadFile("JonsRockSmithMods.ini") < 0) {
++		LOG_ERROR("JonsRockSmithMods SPEED_CONFIG_REJECTED file could not be parsed" << std::endl);
++		return;
++	}
++	fixedGlobalSpeedEnabled = CanonicalSongKey(reader.GetValue("Toggle Switches", "JonsFixedSongSpeedEnabled", "off")) == "on";
++	fixedGlobalSpeedPercent = ParseFixedSpeedPercent(reader.GetValue("Mod Settings", "JonsFixedSongSpeedPercent", "85"));
++	if (!fixedGlobalSpeedPercent) fixedGlobalSpeedPercent = 85;
++	CSimpleIniA::TNamesDepend keys;
++	reader.GetAllKeys("Song Speed Overrides", keys);
++	if (keys.size() > 4096) {
++		fixedGlobalSpeedEnabled = false;
++		LOG_ERROR("JonsRockSmithMods SPEED_CONFIG_REJECTED more than 4096 song overrides" << std::endl);
++		return;
++	}
++	for (const auto& key : keys) {
++		const std::string songKey(key.pItem);
++		if (songKey.empty() || songKey.size() > 128
++			|| songKey.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-") != std::string::npos)
++			continue;
++		const int percent = ParseFixedSpeedPercent(reader.GetValue("Song Speed Overrides", key.pItem, ""));
++		if (percent) songSpeedOverrides[CanonicalSongKey(songKey)] = percent;
++	}
++	LOG_INFO("JonsRockSmithMods SPEED_CONFIG_RELOADED global=" << (fixedGlobalSpeedEnabled ? "on" : "off")
++		<< " percent=" << fixedGlobalSpeedPercent << " songOverrides=" << songSpeedOverrides.size() << std::endl);
++}
++
++int RiffRepeaterMod::RequestedFixedSpeedPercent() const {
++	if (activeFixedSpeedIdentityConfirmed && !activeFixedSpeedSongKey.empty()) {
++		const auto found = songSpeedOverrides.find(CanonicalSongKey(activeFixedSpeedSongKey));
++		if (found != songSpeedOverrides.end()) return found->second;
++	}
++	return fixedGlobalSpeedEnabled ? fixedGlobalSpeedPercent : 0;
++}
++
+ // Patch (or revert) the linear Riff Repeater speed logic to track the setting.
+ void RiffRepeaterMod::SyncLinearSpeeds(ModContext& c) {
+ 	if (c.IsOn(Setting::LinearRiffRepeater) && !RiffRepeater::currentlyEnabled_LinearRR) {
+@@ -112,18 +205,127 @@ void RiffRepeaterMod::SyncLinearSpeeds(ModContext& c) {
+ void RiffRepeaterMod::OnMenuTick(ModContext& c) {
+ 	if (!GameState::Menus::IsInScoreMenus() && RiffRepeater::currentlyEnabled_Above100) {
+ 		RiffRepeater::DisableTimeStretch();
++		fixedSpeedWasApplied = false;
++		lastLoggedFixedSpeedSongKey.clear();
++		lastLoggedFixedSpeedPercent = -1;
++	}
++}
++
++void RiffRepeaterMod::OnSettingsChanged(ModContext& c) {
++	RefreshFixedSpeedConfig(true);
++	if (fixedSpeedWasApplied && RequestedFixedSpeedPercent() == 0) {
++		RiffRepeater::DisableTimeStretch();
++		fixedSpeedWasApplied = false;
++		lastLoggedFixedSpeedSongKey.clear();
++		lastLoggedFixedSpeedPercent = -1;
++	}
++}
++
++void RiffRepeaterMod::OnSongEnter(ModContext&) {
++	// Never bind an override to GetSongKey()'s cached previous-song fallback. A valid
++	// uncached preview event is required at the song boundary for a per-song override.
++	activeFixedSpeedSongKey = GameState::GetPreviewSongKey();
++	activeFixedSpeedIdentityConfirmed = false;
++	activeFixedSpeedIdentityAttempts = 0;
++	if (activeFixedSpeedSongKey.empty() && !songSpeedOverrides.empty()) {
++		LOG_INFO("JonsRockSmithMods SONG_SPEED_IDENTITY_UNAVAILABLE enable song previews before entering Learn a Song" << std::endl);
+ 	}
++	GameOverlay::currentSongSpeedPercent.store(-1.0f, std::memory_order_relaxed);
++}
++
++void RiffRepeaterMod::OnSongExit(ModContext&) {
++	// Restore 100% before the next song so an individual override cannot leak to it.
++	if (fixedSpeedWasApplied) RiffRepeater::DisableTimeStretch();
++	fixedSpeedWasApplied = false;
++	activeFixedSpeedSongKey.clear();
++	activeFixedSpeedIdentityConfirmed = false;
++	lastLoggedFixedSpeedSongKey.clear();
++	lastLoggedFixedSpeedPercent = -1;
++	GameOverlay::currentSongSpeedPercent.store(-1.0f, std::memory_order_relaxed);
+ }
+ 
+ void RiffRepeaterMod::OnSongTick(ModContext& c) {
+ 	// First time we see this song, log its id so the >100% speed table can prep.
+-	if (RiffRepeater::readyToLogSongID && RiffRepeater::LogSongID(GameState::GetSongKey())) {
++	const std::string songKey = GameState::GetSongKey();
++	if (!activeFixedSpeedSongKey.empty() && activeFixedSpeedSongKey != songKey) {
++		// A changed/unknown identity must not retain a setting from the previous song.
++		activeFixedSpeedSongKey.clear();
++		activeFixedSpeedIdentityConfirmed = false;
++		if (fixedSpeedWasApplied) RiffRepeater::DisableTimeStretch();
++		fixedSpeedWasApplied = false;
++	}
++	if (RiffRepeater::readyToLogSongID && RiffRepeater::LogSongID(songKey)) {
+ 		RiffRepeater::readyToLogSongID = false;
++		if (activeFixedSpeedSongKey == songKey) activeFixedSpeedIdentityConfirmed = true;
++	}
++	if (!activeFixedSpeedSongKey.empty() && !activeFixedSpeedIdentityConfirmed && activeFixedSpeedIdentityAttempts < 3) {
++		// Bind only after Wwise confirms the specific Play_<SongKey> actor exists.
++		++activeFixedSpeedIdentityAttempts;
++		activeFixedSpeedIdentityConfirmed = RiffRepeater::LogSongID(activeFixedSpeedSongKey);
++		if (!activeFixedSpeedIdentityConfirmed && activeFixedSpeedIdentityAttempts == 3) {
++			LOG_INFO("JonsRockSmithMods SONG_SPEED_IDENTITY_UNAVAILABLE Wwise did not confirm song="
++				<< activeFixedSpeedSongKey << "; individual speed override skipped" << std::endl);
++		}
+ 	}
+ 
+-	if (c.IsOn(Setting::RRSpeedAboveOneHundred)) {
++	const int requestedPercent = RequestedFixedSpeedPercent();
++	if (fixedSpeedWasApplied && requestedPercent == 0) {
++		RiffRepeater::DisableTimeStretch();
++		fixedSpeedWasApplied = false;
++		lastLoggedFixedSpeedSongKey.clear();
++		lastLoggedFixedSpeedPercent = -1;
++		LOG_INFO("JonsRockSmithMods FIXED_SPEED_RELEASED restored normal 100% speed" << std::endl);
++	}
++	if (requestedPercent != 0 &&
++		GameState::Menus::IsInModesWithAllowedFastRiffRepeater() &&
++		RiffRepeater::loggedCurrentSongID) {
++		if (requestedPercent >= 25 && requestedPercent <= 400) {
++			invalidFixedSpeedLogged = false;
++			if (songKey != lastLoggedFixedSpeedSongKey || requestedPercent != lastLoggedFixedSpeedPercent) {
++				LOG_INFO("JonsRockSmithMods FIXED_SPEED_ACTIVE song=" << songKey
++					<< " requested=" << requestedPercent << "%" << std::endl);
++				lastLoggedFixedSpeedSongKey = songKey;
++				lastLoggedFixedSpeedPercent = requestedPercent;
++				fixedSpeedCorrectionLogs = 0;
++				fixedSpeedCorrectionSuppressionLogged = false;
++			}
++			RiffRepeater::EnableTimeStretch();
++			const float actualPercent = RiffRepeater::GetSpeed(true);
++			if (!std::isfinite(actualPercent) || std::fabs(actualPercent - requestedPercent) > 0.5f) {
++				if (fixedSpeedCorrectionLogs < 5) {
++					LOG_INFO("JonsRockSmithMods FIXED_SPEED_CORRECTION song=" << songKey
++						<< " requested=" << requestedPercent << "% observed=" << actualPercent << "%" << std::endl);
++					++fixedSpeedCorrectionLogs;
++				}
++				else if (!fixedSpeedCorrectionSuppressionLogged) {
++					LOG_INFO("JonsRockSmithMods FIXED_SPEED_CORRECTION song=" << songKey
++						<< " further correction logs suppressed" << std::endl);
++					fixedSpeedCorrectionSuppressionLogged = true;
++				}
++				RiffRepeater::SetSpeed(static_cast<float>(requestedPercent), true);
++			}
++			fixedSpeedWasApplied = true;
++		}
++		else {
++			if (fixedSpeedWasApplied) {
++				RiffRepeater::DisableTimeStretch();
++				fixedSpeedWasApplied = false;
++			}
++			if (!invalidFixedSpeedLogged) {
++				LOG_ERROR("Jons fixed song speed disabled: JonsFixedSongSpeedPercent must be 25..400; got "
++					<< requestedPercent << std::endl);
++				invalidFixedSpeedLogged = true;
++			}
++		}
++	}
++	else if (c.IsOn(Setting::RRSpeedAboveOneHundred)) {
+ 		RiffRepeater::EnableTimeStretch();
+ 	}
++	const float speedPercent = RiffRepeater::GetSpeed(true);
++	GameOverlay::currentSongSpeedPercent.store(
++		std::isfinite(speedPercent) && speedPercent >= 25.0f && speedPercent <= 1600.0f
++			? speedPercent : -1.0f,
++		std::memory_order_relaxed);
+ }
+ 
+ static Framework::ModRegistrar<RiffRepeaterMod> _riffRepeaterReg;
+diff --git a/DLL/Mods/RiffRepeaterMod.hpp b/DLL/Mods/RiffRepeaterMod.hpp
+index cdd0579..2870ac2 100644
+--- a/DLL/Mods/RiffRepeaterMod.hpp
++++ b/DLL/Mods/RiffRepeaterMod.hpp
+@@ -4,6 +4,10 @@
+ #include "RiffRepeater.hpp"
+ #include "../Keybindings.hpp"
+ 
++#include <chrono>
++#include <filesystem>
++#include <map>
++
+ // Consolidates the Riff Repeater features that used to live in ModManager:
+ //   - LinearRiffRepeater: patches the RR speed logic to be linear, kept in sync with the setting.
+ //   - RRSpeedAboveOneHundred: enables >100% time stretch in a song and drops it when leaving to a non-score menu.
+@@ -18,11 +22,32 @@ public:
+ 	void OnTick(Framework::ModContext& c) override;     // Linear-speed patch sync (all phases, incl. startup/loading).
+ 	void OnMenuTick(Framework::ModContext& c) override; // Drop >100% time stretch outside the score menus.
+ 	void OnSongTick(Framework::ModContext& c) override; // Log the song id + apply >100% time stretch.
++	void OnSongEnter(Framework::ModContext& c) override;
++	void OnSongExit(Framework::ModContext& c) override;
++	void OnSettingsChanged(Framework::ModContext& c) override;
+ 
+ private:
+ 	static void Rewind(const Framework::ModContext& c);
+ 	static void SetLoopStart(const Framework::KeyEvent& event);
+ 	static void SetLoopEnd(const Framework::KeyEvent& event);
+-	static void ChangeSpeed(const Framework::ModContext& c, const Framework::KeyEvent& event);
++	void ChangeSpeed(const Framework::ModContext& c, const Framework::KeyEvent& event);
+ 	void SyncLinearSpeeds(Framework::ModContext& c);
++	void RefreshFixedSpeedConfig(bool force);
++	int RequestedFixedSpeedPercent() const;
++	bool fixedGlobalSpeedEnabled = false;
++	int fixedGlobalSpeedPercent = 85;
++	std::map<std::string, int> songSpeedOverrides;
++	std::string activeFixedSpeedSongKey;
++	bool activeFixedSpeedIdentityConfirmed = false;
++	unsigned int activeFixedSpeedIdentityAttempts = 0;
++	std::chrono::steady_clock::time_point nextFixedSpeedConfigPoll{};
++	std::filesystem::file_time_type fixedSpeedConfigWriteTime{};
++	std::uintmax_t fixedSpeedConfigSize = 0;
++	bool fixedSpeedConfigSeen = false;
++	bool fixedSpeedWasApplied = false;
++	bool invalidFixedSpeedLogged = false;
++	std::string lastLoggedFixedSpeedSongKey;
++	int lastLoggedFixedSpeedPercent = -1;
++	int fixedSpeedCorrectionLogs = 0;
++	bool fixedSpeedCorrectionSuppressionLogged = false;
+ };
+diff --git a/DLL/Settings.cpp b/DLL/Settings.cpp
+index 9263001..08c5504 100644
+--- a/DLL/Settings.cpp
++++ b/DLL/Settings.cpp
+@@ -45,6 +45,7 @@ void Settings::Initialize()
+ 
+ 	modSettings = {
+ 		{Setting::Key::CustomSongListTitles, "K"},
++		{Setting::Key::SongRemovalRequest, "VK_F10"},
+ 		{Setting::Key::ToggleLoft,          "T"},
+ 		{Setting::Key::ShowSongTimer,        "S"},
+ 		{Setting::Key::ForceReEnumeration,   "F"},
+@@ -98,6 +99,8 @@ void Settings::Initialize()
+ 		{Setting::RemoveHeadstockWhen, "song"},
+ 		{Setting::ScreenShotScores, "off"},
+ 		{Setting::RRSpeedAboveOneHundred, "off"},
++		{Setting::JonsFixedSongSpeedEnabled, "off"},
++		{Setting::ShowSongRemovalHint, "on"},
+ 		{Setting::AutoTuneForSong, "off"},
+ 		{Setting::AutoTuneForSongDevice, ""},
+ 		{Setting::MidiInDevice, ""},
+@@ -133,6 +136,7 @@ void Settings::Initialize()
+ 		{Setting::ExtendedRangeMode, -5},
+ 		{Setting::CheckForNewSongsInterval, 5000},
+ 		{Setting::RRSpeedInterval, 2},
++		{Setting::JonsFixedSongSpeedPercent, 85},
+ 		{Setting::TuningPedal, 0},
+ 		{Setting::TuningOffset, 0},
+ 		{Setting::VolumeControlInterval, 5},
+@@ -205,12 +209,18 @@ void Settings::ReadKeyBinds() {
+ 		LOG_ERROR("Error reading saved settings" << std::endl);
+ 		return;
+ 	}
++	// Keep Jons-only bindings outside RSMods.ini because the stock GUI rewrites that file.
++	CSimpleIniA jonsReader;
++	const bool hasJonsSettings = jonsReader.LoadFile("JonsRockSmithMods.ini") >= 0;
+ 
+ 	std::unique_lock lock(g_settingsMutex);
+ 
+ 	modSettings = {
+ 		{ Setting::Key::ToggleLoft,         reader.GetValue("Keybinds", Setting::Key::ToggleLoft,         "T") },
+ 		{ Setting::Key::CustomSongListTitles, reader.GetValue("Keybinds", Setting::Key::CustomSongListTitles, "K") },
++		{ Setting::Key::SongRemovalRequest, hasJonsSettings
++			? jonsReader.GetValue("Keybinds", Setting::Key::SongRemovalRequest, "VK_F10")
++			: "VK_F10" },
+ 		{ Setting::Key::ShowSongTimer,       reader.GetValue("Keybinds", Setting::Key::ShowSongTimer,       "N") },
+ 		{ Setting::Key::ForceReEnumeration,  reader.GetValue("Keybinds", Setting::Key::ForceReEnumeration,  "F") },
+ 		{ Setting::Key::MenuToggle,          reader.GetValue("Keybinds", Setting::Key::MenuToggle,          "M") },
+@@ -247,6 +257,9 @@ void Settings::ReadModSettings() {
+ 		LOG_ERROR("Error reading saved settings" << std::endl);
+ 		return;
+ 	}
++	// Stock RSMods GUI rewrites RSMods.ini using only keys it knows.
++	CSimpleIniA jonsReader;
++	const bool hasJonsSettings = jonsReader.LoadFile("JonsRockSmithMods.ini") >= 0;
+ 
+ 	// Augments the modSettings that ReadKeyBinds already populated, so it adds keys rather
+ 	// than replacing the map wholesale.
+@@ -256,6 +269,7 @@ void Settings::ReadModSettings() {
+ 		{Setting::ExtendedRangeMode, reader.GetLongValue("Mod Settings", "ExtendedRangeModeAt", -5)},
+ 		{Setting::CheckForNewSongsInterval, reader.GetLongValue("Mod Settings", "CheckForNewSongsInterval", 5000)},
+ 		{Setting::RRSpeedInterval, reader.GetLongValue("Mod Settings", "RRSpeedInterval", 2)},
++		{Setting::JonsFixedSongSpeedPercent, hasJonsSettings ? jonsReader.GetLongValue("Mod Settings", "JonsFixedSongSpeedPercent", 85) : 85},
+ 		{Setting::TuningPedal, reader.GetLongValue("Mod Settings", "TuningPedal", 0)},
+ 		{Setting::TuningOffset, reader.GetLongValue("Mod Settings", "TuningOffset", 0)},
+ 		{Setting::VolumeControlInterval, reader.GetLongValue("Mod Settings", "VolumeControlInterval", 5)},
+@@ -315,6 +329,10 @@ void Settings::ReadModSettings() {
+ 	modSettings[Setting::RemoveHeadstockWhen] = reader.GetValue("Toggle Switches", "RemoveHeadstockWhen", "song");
+ 	modSettings[Setting::ScreenShotScores] = reader.GetValue("Toggle Switches", "ScreenShotScores", "off");
+ 	modSettings[Setting::RRSpeedAboveOneHundred] = reader.GetValue("Toggle Switches", "RRSpeedAboveOneHundred", "off");
++	modSettings[Setting::ShowSongRemovalHint] = hasJonsSettings
++        ? jonsReader.GetValue("Toggle Switches", "ShowSongRemovalHint", "on") : "on";
++	modSettings[Setting::JonsFixedSongSpeedEnabled] = hasJonsSettings
++		? jonsReader.GetValue("Toggle Switches", "JonsFixedSongSpeedEnabled", "off") : "off";
+ 	modSettings[Setting::AutoTuneForSong] = reader.GetValue("Toggle Switches", "AutoTuneForSong", "off");
+ 	modSettings[Setting::AutoTuneForSongDevice] = reader.GetValue("Toggle Switches", "AutoTuneForSongDevice", "");
+ 	modSettings[Setting::MidiInDevice] = reader.GetValue("Toggle Switches", "MidiInDevice", "");
+diff --git a/DLL/Settings.hpp b/DLL/Settings.hpp
+index c70b6d1..cbc429f 100644
+--- a/DLL/Settings.hpp
++++ b/DLL/Settings.hpp
+@@ -24,6 +24,9 @@ namespace Settings {
+ 		inline constexpr char RRSpeedInterval[]         = "RRSpeedInterval";
+ 		inline constexpr char RRSpeedAboveOneHundred[]  = "RRSpeedAboveOneHundred";
+ 		inline constexpr char LinearRiffRepeater[]      = "LinearRiffRepeater";
++		inline constexpr char ShowSongRemovalHint[] = "ShowSongRemovalHint";
++		inline constexpr char JonsFixedSongSpeedEnabled[] = "JonsFixedSongSpeedEnabled";
++		inline constexpr char JonsFixedSongSpeedPercent[] = "JonsFixedSongSpeedPercent";
+ 
+ 		// Loft
+ 		inline constexpr char ToggleLoftEnabled[]       = "ToggleLoftEnabled";
+@@ -165,6 +168,7 @@ namespace Settings {
+ 		// alongside the feature-flag and numeric settings above.
+ 		namespace Key {
+ 			inline constexpr char CustomSongListTitles[] = "CustomSongListTitles";
++			inline constexpr char SongRemovalRequest[]    = "SongRemovalRequestKey";
+ 			inline constexpr char ToggleLoft[]           = "ToggleLoftKey";
+ 			inline constexpr char ShowSongTimer[]        = "ShowSongTimerKey";
+ 			inline constexpr char ForceReEnumeration[]   = "ForceReEnumerationKey";
+diff --git a/DLL/Version.h b/DLL/Version.h
+index f283d1e..ab153d0 100644
+--- a/DLL/Version.h
++++ b/DLL/Version.h
+@@ -21,4 +21,4 @@
+ 	RSMODS_STRINGIFY(RSMODS_VERSION_BUILD)
+ 
+ #define RSMODS_BUILD_VERSION_STRING \
+-	RSMODS_VERSION_STRING "-" RSMODS_GIT_HASH
++	RSMODS_VERSION_STRING "-" RSMODS_GIT_HASH "-JonsRockSmithMods"

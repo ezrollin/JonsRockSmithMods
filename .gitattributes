@@ -1,0 +1,3 @@
+# Unified patches contain context-prefix spaces before original tabs and blank lines.
+# Validate applied source whitespace and patch applicability separately.
+native/*.patch -whitespace

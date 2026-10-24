@@ -1,0 +1,40 @@
+# Python runtime and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Generated packages, release history, and build verification trees
+build/
+dist/
+build_pyinstaller*/
+package_stage*/
+package_verify*/
+/release*/
+native/builds/
+native/staging/
+native/validation/
+native/artifacts/
+native/upstream-master/
+metadata/bin/
+split_helper/bin/
+
+# User data and generated binaries
+*.log
+*.psarc
+*_PRFLDB
+*_PRFLDB.*
+*.dll
+*.exe
+JonsRockSmithMods.ini
+metadata_cache.json
+
+# Local task notes can contain machine paths and session history
+/orientation.md
+/todo.md
+/decisionsfile.md
+/CommonErrors.md
+/reentry.md
+/handoffprompt.md
+/lessons.md
