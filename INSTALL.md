@@ -22,7 +22,7 @@ The executable or app.py must be directly inside that JonsRockSmithMods folder, 
 - Python: `Setup Python.bat` once, then `Run Python.bat`.
 - `Launch JonsRockSmithMods.bat` offers both choices explicitly.
 
-On Setup & startup, confirm running version **0.23.0**, mode and path. File Properties > Details also shows EXE version 0.23.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
+On Setup & startup, confirm running version **0.24.0**, mode and path. File Properties > Details also shows EXE version 0.24.0.0. Close an old companion before switching versions. Rocksmith can remain running for read-only review, queued removals and shared tuner input; profile/archive/native installation writes have their own game-closed guards.
 
 ## 4. Check file links before use
 
@@ -51,7 +51,7 @@ A440 changes the note target only. It does not pitch-shift backing audio. A char
 
 The modified upstream native DLL is intentionally omitted from public downloads because no upstream redistribution license was found. Developer source/patch build instructions are in native/README.md in the repository. Do not download unknown replacement DLLs or overwrite an incompatible version. No public download silently installs a native module.
 
-In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice open pitch). Personal cents offsets can change the live open target. The live meter marks red for farther out, amber for near, and green within the in-tune range.
+In the tuner, the nominal reference table updates whenever you change tuning. It lists all six strings' open notes/frequencies and 12th-fret frequencies (twice the nominal open pitch). The selected table row always follows the string selector. A stable open reading is required before the 12th-fret check, but does not change its target. Personal pitch offsets are not used. The live meter shows actual and target Hz, cents difference, and red/amber/green tuning bands. Closing the tuner waits for its audio-capture thread to release the cable before the window closes.
 
 ## 6. Common errors
 

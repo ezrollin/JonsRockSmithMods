@@ -66,7 +66,7 @@ from pending_moves import (
     undo_last_completed_moves,
 )
 from song_store import SongFile, SongStore, StoreError, game_is_running, normalize_review_root
-from song_table import context_actions, context_selection, next_sort_state, song_sort_key
+from song_table import context_actions, context_selection, next_sort_state, removal_row_status, song_sort_key
 from split_pack import (
     SplitPackError, selected_song_payload, split_and_install_pack,
     split_pack_unavailable_reason, update_visible_song_selection,
@@ -80,7 +80,7 @@ from startup_config import read_startup_config, write_startup_config
 from ui_layout import ScrollablePage, initial_window_size
 
 
-APP_VERSION = "0.23.0"
+APP_VERSION = "0.24.0"
 DEFAULT_DIFFICULTY_PERCENT = 50
 DEFAULT_GAME = next((parent for parent in Path(__file__).resolve().parents if (parent / "Rocksmith2014.exe").is_file()), Path(r"C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014"))
 DEFAULT_REVIEW = Path.home() / "Documents" / "JonsRockSmithMods" / "DoNotWant"
@@ -302,6 +302,8 @@ class App(tk.Tk):
         self.favorite_library_signature = None
         self.visible_rows: dict[str, SongFile] = {}
         self.checked_paths: set[str] = set()
+        self.pending_move_paths: set[str] = set()
+        self.pending_game_song_keys: set[str] = set()
         self.sort_column: str | None = None
         self.sort_descending = False
         self.preview_working_directory: Path | None = None
@@ -375,10 +377,9 @@ class App(tk.Tk):
         tools.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         for column, (text, command) in enumerate((
             ("Full refresh", self.refresh),
-            ("Read titles", self._scan_metadata),
             ("Scan favorites", self._scan_favorites),
             ("Tune guitar", self._open_intonation_checker),
-            ("Check song health", self._open_song_health),
+            ("Check EVERY song's health", self._open_song_health),
         )):
             tools.columnconfigure(column, weight=1, uniform="library_tools")
             button = ttk.Button(tools, text=text, command=command)
@@ -392,15 +393,15 @@ class App(tk.Tk):
         body.rowconfigure(0, weight=1)
         body.columnconfigure(0, weight=1)
         self.tree = ttk.Treeview(
-            body, columns=("move", "location", "artist", "song", "favorite", "name", "size"),
+            body, columns=("move", "removal", "location", "artist", "song", "favorite", "name", "size"),
             show="headings", selectmode="extended", height=7,
         )
         self.column_titles = {
-            "move": "Move?", "location": "Location", "artist": "Artist",
+            "move": "Remove?", "removal": "Removal status", "location": "Location", "artist": "Artist",
             "song": "Song name", "favorite": "Favorite status",
             "name": "Archive filename", "size": "MiB",
         }
-        for column, width in (("move", 58), ("location", 100), ("artist", 175),
+        for column, width in (("move", 72), ("removal", 170), ("location", 100), ("artist", 175),
                               ("song", 230), ("favorite", 125), ("name", 260), ("size", 70)):
             self.tree.heading(column, text=self.column_titles[column],
                               command=lambda selected_column=column: self._sort_tree(selected_column))
@@ -439,6 +440,7 @@ class App(tk.Tk):
 
         action(remove, "check_visible_button", "Check all matching active archives", self._check_visible_active, 0)
         action(remove, "clear_checks_button", "Clear removal checks", self._clear_move_checks, 0, 1)
+        action(remove, "uncheck_favorites_button", "Uncheck favorite archives", self._uncheck_favorited_archives, 0, 2)
         action(remove, "move_checked_button", "Move checked to Do Not Want", self._move_checked, 1)
         action(remove, "queue_checked_button", "Queue checked until game closes", self._queue_checked_after_close, 1, 1)
         action(remove, "restore_button", "Restore selected archives", self._restore, 2)
@@ -484,6 +486,7 @@ class App(tk.Tk):
             HoverTooltip(self.check_visible_button, "Checks every active archive matching the search, including scrolled rows. "
                          "Nothing moves until you choose a move or queue action."),
             HoverTooltip(self.clear_checks_button, "Clears removal checks; does not change selected songs or move files."),
+            HoverTooltip(self.uncheck_favorites_button, "After a verified favorite scan, clears removal checks only for archives marked Favorite. It does not change profile favorites or move files."),
             HoverTooltip(self.move_checked_button, "Moves whole checked PSARCs reversibly into Do Not Want. Close Rocksmith first."),
             HoverTooltip(self.queue_checked_button, "Saves a removal request now and moves the whole archive after Rocksmith closes."),
             HoverTooltip(self.split_pack_button, "Creates and verifies every song separately, installs singles into dlc, "
@@ -493,7 +496,7 @@ class App(tk.Tk):
         for parent in (practice, setup):
             parent.columnconfigure(0, weight=1)
         difficulty = ttk.LabelFrame(practice, text="Difficulty for every song", padding=10)
-        difficulty.pack(fill="x", pady=(0, 12))
+        difficulty.pack(fill="x", pady=(0, 16), ipadx=4, ipady=4)
         ttk.Label(difficulty, text="Sight Reading Level (1 easiest, 10 hardest)").grid(row=0, column=0, sticky="w")
         ttk.Spinbox(difficulty, from_=1, to=10, increment=1,
                     textvariable=self.difficulty_level_var, width=5).grid(row=0, column=1, padx=8)
@@ -509,8 +512,9 @@ class App(tk.Tk):
             row=3, column=0, columnspan=2, sticky="ew", pady=8)
         ttk.Label(difficulty, text="Close Rocksmith before changing saved difficulty. A verified profile backup is made first. "
                   "Restart the game to load changes.", wraplength=700).grid(row=4, column=0, columnspan=2, sticky="ew")
+        ttk.Separator(practice, orient="horizontal").pack(fill="x", pady=(0, 16))
         speed = ttk.LabelFrame(practice, text="Default speed for songs without an override", padding=10)
-        speed.pack(fill="x")
+        speed.pack(fill="x", pady=(0, 12), ipadx=4, ipady=4)
         ttk.Checkbutton(speed, text="Enable default speed for every song", variable=self.speed_enabled_var).grid(
             row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(speed, text="Speed % (new-setting default 85%)").grid(row=1, column=0, sticky="w", pady=8)
@@ -946,7 +950,7 @@ class App(tk.Tk):
                 raise StoreError("No verified songs found in these archives.")
             overrides = read_song_speed_config(Path(self.game_var.get()) / "JonsRockSmithMods.ini")
         except (OSError, ValueError, StoreError) as exc:
-            messagebox.showwarning("Individual song settings", f"{exc}\n\nRun Full refresh / Read titles first.")
+            messagebox.showwarning("Individual song settings", f"{exc}\n\nRun Full refresh first.")
             return
         window = tk.Toplevel(self)
         window.title("Individual song difficulty and speed")
@@ -1003,7 +1007,7 @@ class App(tk.Tk):
                 game_root = Path(self.game_var.get())
                 ids = tuple(dict.fromkeys(key for _, _, arrangement_ids in chosen for key in arrangement_ids))
                 if not ids:
-                    raise StoreError("No arrangement IDs available. Read titles before changing difficulty; song speed only needs SongKey.")
+                    raise StoreError("No arrangement IDs available. Run Full refresh before changing difficulty; song speed only needs SongKey.")
             except (OSError, ValueError, StoreError) as exc:
                 messagebox.showwarning("Song difficulty", str(exc), parent=window)
                 return
@@ -1145,6 +1149,21 @@ class App(tk.Tk):
         if self._operation_busy:
             return
         self.clear_checks_button.configure(state="normal")
+        checked_favorites = any(
+            row.location == "Active"
+            and self._path_key(row) in self.checked_paths
+            and self.favorite_states.get(row.relative_path) == "Favorite"
+            for row in self.rows
+        )
+        verified_favorites = (
+            self.favorite_result is not None
+            and self.favorite_result.available
+            and self.favorite_library_signature is not None
+            and self.favorite_profile_signature == self._profile_signature()
+        )
+        self.uncheck_favorites_button.configure(
+            state="normal" if checked_favorites and verified_favorites else "disabled"
+        )
         self.move_checked_button.configure(state="normal" if self._checked_active() else "disabled")
         self.queue_checked_button.configure(state="normal" if self._checked_active() else "disabled")
         self.cancel_queued_moves_button.configure(
@@ -1394,7 +1413,7 @@ class App(tk.Tk):
             messagebox.showinfo(
                 "Archive details",
                 f"No current title metadata is available for:\n{row.path}\n\n"
-                "Run Read titles or Full refresh, then open Archive details again.",
+                "Run Full refresh, then open Archive details again.",
             )
             return
         favorite_keys = self._current_detail_favorite_keys()
@@ -1855,6 +1874,31 @@ class App(tk.Tk):
         self._render()
         self._update_action_states()
 
+    def _uncheck_favorited_archives(self) -> None:
+        if not (
+            self.favorite_result is not None
+            and self.favorite_result.available
+            and self.favorite_library_signature is not None
+            and self.favorite_profile_signature == self._profile_signature()
+        ):
+            messagebox.showinfo(
+                "Uncheck favorite archives",
+                "Run Scan favorites first. No song checks were changed.", parent=self,
+            )
+            return
+        favorite_paths = {
+            self._path_key(row)
+            for row in self.rows
+            if row.location == "Active" and self.favorite_states.get(row.relative_path) == "Favorite"
+        }
+        changed = len(self.checked_paths.intersection(favorite_paths))
+        self.checked_paths.difference_update(favorite_paths)
+        self._render()
+        self._update_action_states()
+        self.status_var.set(
+            f"Cleared removal checks for {changed} favorited archive(s). Profile favorites and song files were unchanged."
+        )
+
     def _clear_move_checks(self) -> None:
         self.checked_paths.clear()
         self._render()
@@ -1893,11 +1937,12 @@ class App(tk.Tk):
                 try:
                     pending = load_pending_moves(PENDING_MOVE_QUEUE_PATH)
                     game_running = game_is_running() if pending else False
-                    result = (len(pending), game_running, None)
+                    result = (
+                        len(pending), game_running, None, None,
+                        tuple(item.relative_path.casefold() for item in pending),
+                    )
                 except Exception as exc:
-                    result = (None, None, str(exc), traceback.format_exc())
-                else:
-                    result = (*result, None)
+                    result = (None, None, str(exc), traceback.format_exc(), ())
                 self.events.put(("pending_moves_check", "Checking queued removals", result))
 
             threading.Thread(target=worker, daemon=True).start()
@@ -1967,6 +2012,8 @@ class App(tk.Tk):
             for request in batch.requests:
                 discard_game_song_request(request)
             self.deferred_game_song_requests.clear()
+            self.pending_game_song_keys.clear()
+            self._render()
             self.pending_moves_status_var.set("Saved marks forgotten. Song files and confirmed queues are unchanged.")
         except StoreError as exc:
             logging.exception("Could not forget saved marks")
@@ -1984,6 +2031,13 @@ class App(tk.Tk):
             if self._operation_busy or self.active_game_song_request is not None:
                 return
             batch = load_pending_game_song_requests()
+            pending_keys = {request.song_key.casefold() for request in batch.requests}
+            previous_pending_keys = self.__dict__.get("pending_game_song_keys")
+            if previous_pending_keys is None:
+                self.pending_game_song_keys = pending_keys
+            elif pending_keys != previous_pending_keys:
+                self.pending_game_song_keys = pending_keys
+                self._render()
             if batch.expired_count:
                 logging.info("Ignored %s expired in-game song request(s)", batch.expired_count)
                 self.pending_moves_status_var.set(
@@ -2167,7 +2221,7 @@ class App(tk.Tk):
                 kind, description, result = self.events.get_nowait()
                 if kind == "pending_moves_check":
                     self.pending_move_check_active = False
-                    count, game_running, error, error_details = result
+                    count, game_running, error, error_details, pending_paths = result
                     if error:
                         self.pending_moves_status_var.set(
                             f"Cannot check queued removals; no archives moved. Details: {LOG_PATH}"
@@ -2179,7 +2233,11 @@ class App(tk.Tk):
                         self.pending_move_check_error = error
                     else:
                         self.pending_move_check_error = None
+                        old_paths = self.pending_move_paths
+                        self.pending_move_paths = set(pending_paths)
                         self.pending_move_count = count
+                        if old_paths != self.pending_move_paths:
+                            self._render()
                         if count == 0:
                             self.pending_move_retry_paused = False
                             self.pending_moves_status_var.set("No queued removals.")
@@ -2230,7 +2288,7 @@ class App(tk.Tk):
                     if description == "Resolving in-game song selection":
                         self._finish_in_game_song_request(
                             f"No safe archive match: {result}. No archive was queued. "
-                            "Run Full refresh / Read titles, fix the issue shown, then retry the saved F10 mark.",
+                            "Run Full refresh, fix the issue shown, then retry the saved F10 mark.",
                             show_warning=True,
                         )
                         self._update_action_states()
@@ -2398,6 +2456,7 @@ class App(tk.Tk):
                     self.status_var.set(text)
                 elif description == "Queueing selected archives":
                     self.pending_move_count = result
+                    self._refresh_pending_move_paths()
                     self.pending_move_retry_paused = False
                     self.pending_moves_status_var.set(
                         f"{result} archive(s) queued. They will move reversibly after Rocksmith closes."
@@ -2417,6 +2476,7 @@ class App(tk.Tk):
                             self.deferred_game_song_requests.add(request.request_id)
                     self.active_game_song_request = None
                     self.pending_move_count = result
+                    self._refresh_pending_move_paths()
                     self.pending_move_retry_paused = False
                     self.pending_moves_status_var.set(
                         "F10 mark matched. Single-song archive queued for automatic reversible move to Do Not Want."
@@ -2428,6 +2488,7 @@ class App(tk.Tk):
                     if not isinstance(result, PendingMoveResult):
                         raise StoreError("Queued-removal worker returned an invalid result")
                     self.pending_move_count = result.remaining_count
+                    self._refresh_pending_move_paths()
                     self.pending_move_retry_paused = False
                     self.checked_paths.clear()
                     self.pending_moves_status_var.set(
@@ -2451,6 +2512,8 @@ class App(tk.Tk):
                     self.refresh()
                 elif description == "Canceling queued song removals":
                     self.pending_move_count = 0
+                    self.pending_move_paths.clear()
+                    self._render()
                     self.pending_move_retry_paused = False
                     self.pending_moves_status_var.set("Queued removals cancelled; song files were untouched.")
                     self.status_var.set(f"Cancelled {result} queued archive move(s). No files were moved.")
@@ -2534,6 +2597,8 @@ class App(tk.Tk):
 
     def _render(self) -> None:
         term = self.filter_var.get().casefold().strip()
+        pending_move_paths = self.__dict__.get("pending_move_paths", set())
+        pending_game_song_keys = self.__dict__.get("pending_game_song_keys", set())
         selected_before = tuple(self.tree.selection())
         focus_before = self.tree.focus()
         try:
@@ -2551,9 +2616,23 @@ class App(tk.Tk):
                 continue
             item = self._path_key(row)
             checked = row.location == "Active" and self._path_key(row) in self.checked_paths
+            f10_marked = False
+            if row.location == "Active":
+                if metadata:
+                    metadata_song_keys = {
+                        str(song.get("song_key") or "").strip().casefold()
+                        for song in metadata_song_records(metadata)
+                        if isinstance(song, dict) and str(song.get("song_key") or "").strip()
+                    }
+                    f10_marked = bool(metadata_song_keys.intersection(pending_game_song_keys))
+            removal_status = removal_row_status(
+                checked=checked,
+                queued=row.relative_path.casefold() in pending_move_paths,
+                f10_marked=f10_marked,
+            )
             self.tree.insert("", "end", iid=item,
                              values=("☑" if checked else ("☐" if row.location == "Active" else ""),
-                                     row.location, artist or "Unknown", title or "Unknown", favorite,
+                                     removal_status, row.location, artist or "Unknown", title or "Unknown", favorite,
                                      row.relative_path, f"{row.size / 1048576:.1f}"))
             self.visible_rows[item] = row
         self._apply_tree_sort()
@@ -2566,7 +2645,20 @@ class App(tk.Tk):
             self.tree.yview_moveto(scroll_position)
         all_checked = sum(1 for row in self.rows
                           if row.location == "Active" and self._path_key(row) in self.checked_paths)
-        self.checked_count_var.set(f"{all_checked} songs checked")
+        self.checked_count_var.set(
+            f"{all_checked} archives checked for removal; {len(pending_move_paths)} queued after close; "
+            f"{len(pending_game_song_keys)} saved F10 mark(s)"
+        )
+
+    def _refresh_pending_move_paths(self) -> None:
+        try:
+            pending = load_pending_moves(PENDING_MOVE_QUEUE_PATH)
+        except StoreError:
+            logging.exception("Could not refresh queued-removal row markers")
+            return
+        self.pending_move_paths = {item.relative_path.casefold() for item in pending}
+        self.pending_move_count = len(pending)
+        self._render()
 
     def _scan_metadata(self) -> None:
         selected = [self.visible_rows[item] for item in self.tree.selection() if item in self.visible_rows]
@@ -2671,7 +2763,7 @@ class App(tk.Tk):
             messagebox.showwarning(
                 "Rocksmith favorites",
                 f"Selected songs cannot be safely matched to Rocksmith profile tracks:\n{exc}\n\n"
-                "No profile changes were made. Read titles or run Full refresh, then try again.",
+                "No profile changes were made. Run Full refresh, then try again.",
             )
             return
 
@@ -3171,7 +3263,8 @@ class App(tk.Tk):
             return
         self._stop_preview()
         if self.intonation_window is not None:
-            self.intonation_window.close()
+            self.intonation_window.close_and_then(self.destroy)
+            return
         self.destroy()
 
     def refresh(self) -> None:

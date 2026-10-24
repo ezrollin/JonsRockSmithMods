@@ -288,21 +288,36 @@ class ManualIntonationSessionTests(unittest.TestCase):
             self.assertAlmostEqual(0., update.cents_from_target, places=8)
             self.assertEqual((string, 'fret12'), session.current_step)
 
-    def test_offset_open_capture_octave_stays_relative_to_actual_open(self):
+    def test_manual_fret12_target_stays_at_nominal_a440_even_if_open_is_within_tolerance(self):
         from intonation_analysis import ManualIntonationSession
         session = ManualIntonationSession()
-        standard = frequency_for_note('E2')
-        session.set_reference_offset(6, -20.)
-        actual = standard * 2 ** (-18. / 1200.)
+        standard = frequency_for_note('G3')
+        actual = standard * 2 ** (4. / 1200.)
+        session.select(3, 'open')
         self.stable(session, actual, standard)
-        session.select(6, 'fret12')
-        self.assertAlmostEqual(actual * 2, session.target_frequency(standard))
-        update = self.stable(session, actual * 2, standard, 2.)
-        self.assertAlmostEqual(0., update.cents_from_target)
-        # Offset affects targets, not the frequency reported by the analyzer.
-        self.assertEqual(actual * 2, update.measured_frequency_hz)
-        session.set_reference_offset(6, -10.)
-        self.assertIsNone(session.target_frequency(standard))
+        session.select(3, 'fret12')
+        target = standard * 2
+        self.assertAlmostEqual(target, session.target_frequency(standard))
+        measured = 397.0
+        update = self.stable(session, measured, standard, 2.)
+        self.assertAlmostEqual(1200 * math.log2(measured / target), update.cents_from_target)
+        self.assertAlmostEqual(target, update.target_frequency_hz)
+        self.assertEqual(measured, update.measured_frequency_hz)
+
+    def test_user_reported_fret12_values_are_compared_to_nominal_chart_values(self):
+        from intonation_analysis import ManualIntonationSession
+        cases = ((5, 'B3', 500.0), (1, 'E4', 662.0))
+        for string_number, open_note, measured in cases:
+            with self.subTest(string=string_number):
+                session = ManualIntonationSession()
+                open_target = frequency_for_note(open_note)
+                session.select(string_number, 'open')
+                self.stable(session, open_target, open_target)
+                session.select(string_number, 'fret12')
+                target = open_target * 2
+                update = self.stable(session, measured, open_target, 2.)
+                self.assertAlmostEqual(target, update.target_frequency_hz)
+                self.assertAlmostEqual(1200 * math.log2(measured / target), update.cents_from_target)
 
     def test_wrong_octave_never_emits_1200_cent_adjustment(self):
         from intonation_analysis import ManualIntonationSession

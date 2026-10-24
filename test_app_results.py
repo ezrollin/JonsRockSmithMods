@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 import inspect
+from types import SimpleNamespace
 from unittest import mock
 from pathlib import Path
 
@@ -38,8 +39,39 @@ class WorkerResultTests(unittest.TestCase):
         self.assertNotIn('text="Individual songs"', source)
         self.assertNotIn('text="Edit selected songs"', source)
         self.assertIn("Edit difficulty / speed for selected pack songs", source)
+        self.assertNotIn('("Read titles", self._scan_metadata)', source)
+        self.assertIn("Check EVERY song's health", source)
+        self.assertIn('ttk.Separator(practice, orient="horizontal")', source)
         self.assertIn("Undo last completed removal", source)
         self.assertIn("WARNING: Queueing moves each checked PSARC", source)
+
+    def test_uncheck_favorite_archives_clears_only_verified_favorites(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            favorite = Path(folder) / "favorite.psarc"
+            not_favorite = Path(folder) / "not-favorite.psarc"
+            favorite.write_bytes(b"favorite")
+            not_favorite.write_bytes(b"not-favorite")
+            favorite_row = SongFile("favorite.psarc", favorite, 8, "Active")
+            other_row = SongFile("not-favorite.psarc", not_favorite, 9, "Active")
+            app = SimpleNamespace(
+                favorite_result=FavoriteResult(True, frozenset({"favorite-song"}), "loaded", Path("profile")),
+                favorite_library_signature=("library",),
+                favorite_profile_signature=("profile",),
+                _profile_signature=lambda: ("profile",),
+                rows=[favorite_row, other_row],
+                favorite_states={"favorite.psarc": "Favorite", "not-favorite.psarc": "Not favorite"},
+                checked_paths={str(favorite.resolve()).casefold(), str(not_favorite.resolve()).casefold()},
+                _path_key=App._path_key,
+                _render=mock.Mock(),
+                _update_action_states=mock.Mock(),
+                status_var=mock.Mock(),
+            )
+
+            App._uncheck_favorited_archives(app)
+
+            self.assertEqual({str(not_favorite.resolve()).casefold()}, app.checked_paths)
+            app._render.assert_called_once()
+            app._update_action_states.assert_called_once()
 
     def test_missing_profile_gets_clear_browse_guidance_without_profile_write(self) -> None:
         class Value:

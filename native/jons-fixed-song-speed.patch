@@ -34,7 +34,7 @@ index f13894e..4652257 100644
  	}
  }
  
-@@ -342,6 +361,50 @@ void GameOverlay::OnResetDevice() {
+@@ -342,6 +361,54 @@ void GameOverlay::OnResetDevice() {
  	fontCache.OnResetDevice();
  }
  
@@ -47,7 +47,7 @@ index f13894e..4652257 100644
 +
 +void GameOverlay::SetSongRemovalStatus(const std::string& message, bool failed) {
 +    std::lock_guard<std::mutex> lock(songRemovalStatusMutex);
-+    songRemovalStatus = message.substr(0, 256);
++    songRemovalStatus = message.substr(0, 160);
 +    songRemovalStatusFailed = failed;
 +    songRemovalStatusUntil = GetTickCount64() + 10000;
 +}
@@ -68,14 +68,18 @@ index f13894e..4652257 100644
 +			|| !GameState::songRemovalPreviewActive.load(std::memory_order_acquire)) return;
 +        std::string key = Settings::ReturnSettingValue(Setting::Key::SongRemovalRequest);
 +        if (key.rfind("VK_", 0) == 0) key.erase(0, 3);
-+		message = "Jons: " + key + " marks this preview for removal after Rocksmith closes.";
-+		message += "\nOne-song archive only; undo in the companion app. Packs are refused.";
++		message = "Press " + key + ": mark preview for removal after exit.";
++		message += "\nSingle-song files only; undo in JonsRockSmithMods.";
 +    }
-+    const int fontHeight = static_cast<int>(std::max(14u, std::min(24u, WindowSize.height / 40u)));
-+    const int x = WindowSize.width / 30;
-+    const int y = WindowSize.height / 10;
-+    const int right = WindowSize.width - x;
-+    const int bottom = y + fontHeight * 5;
++    const int fontHeight = static_cast<int>(std::max(14u, std::min(22u, WindowSize.height / 44u)));
++    const int x = WindowSize.width / 40;
++    const int y = WindowSize.height / 14;
++    // Keep the wrapped hint inside the left 65% of the game view so it does
++    // not run across controls on the right at wide or narrow resolutions.
++    const int right = (std::min)(static_cast<int>(WindowSize.width) - x,
++        x + static_cast<int>(WindowSize.width * 0.62f));
++    const int bottom = (std::min)(static_cast<int>(WindowSize.height) - y,
++        y + fontHeight * 6);
 +    const Resolution fontSize{ 0u, static_cast<unsigned int>(fontHeight) };
 +    const DWORD format = DT_LEFT | DT_WORDBREAK;
 +    DX9DrawText(message, 0xFF000000, x + 2, y + 2, right + 2, bottom + 2, pDevice, fontSize, format);

@@ -210,11 +210,11 @@ class GuidedTuningFlow:
 
 
 class ManualIntonationSession:
-    """Explicit string/stage selection; fret 12 is relative to captured open pitch.
+    """Explicit string/stage selection with fixed equal-tempered targets.
 
-    Reference offsets affect open tuning targets only, never measured frequency.
-    No observation changes the selected string or stage. Out-of-register notes
-    have no adjustment cents, so an octave error cannot become a tuning cue.
+    OPEN and FRET 12 compare to the selected tuning's A440 chart values.
+    A stable open reading is required before checking fret 12, but does not
+    shift its target. No observation changes the selected string or stage.
     """
 
     def __init__(self, *, stable_samples: int = 3, stability_span_cents: float = 8.0,
@@ -230,7 +230,6 @@ class ManualIntonationSession:
         self.open_tolerance_cents = float(open_tolerance_cents)
         self.fret_tolerance_cents = float(fret_tolerance_cents)
         self.measurements = {number: {} for number in range(6, 0, -1)}
-        self.reference_offsets = {number: 0.0 for number in range(6, 0, -1)}
         self.string_number = 6
         self.stage = "open"
         self._recent: list[PitchEstimate] = []
@@ -249,18 +248,6 @@ class ManualIntonationSession:
         self._recent.clear()
         self._last_timestamp = None
 
-    def set_reference_offset(self, string_number: int, cents: float) -> None:
-        if type(string_number) is not int or string_number not in range(1, 7):
-            raise ValueError("String number must be from 1 to 6")
-        if not math.isfinite(cents) or not -100.0 <= cents <= 100.0:
-            raise ValueError("Reference offset must be from -100 to +100 cents")
-        if self.reference_offsets[string_number] != float(cents):
-            self.reference_offsets[string_number] = float(cents)
-            self.measurements[string_number].clear()
-            if string_number == self.string_number:
-                self._recent.clear()
-                self._last_timestamp = None
-
     def reset(self) -> None:
         for readings in self.measurements.values():
             readings.clear()
@@ -271,9 +258,10 @@ class ManualIntonationSession:
         if not math.isfinite(tuning_open_hz) or tuning_open_hz <= 0:
             raise ValueError("Open-string target must be finite and positive")
         if self.stage == "open":
-            return tuning_open_hz * 2.0 ** (self.reference_offsets[self.string_number] / 1200.0)
-        captured = self.measurements[self.string_number].get("open")
-        return None if captured is None else captured * 2.0
+            return tuning_open_hz
+        if self.measurements[self.string_number].get("open") is None:
+            return None
+        return tuning_open_hz * 2.0
 
     def observe(self, pitch: PitchEstimate, tuning_open_hz: float) -> GuidedTuningUpdate:
         target = self.target_frequency(tuning_open_hz)

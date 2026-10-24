@@ -9,6 +9,7 @@ from song_table import (
     context_actions,
     context_selection,
     next_sort_state,
+    removal_row_status,
     song_sort_key,
 )
 
@@ -16,7 +17,7 @@ from song_table import (
 class SongTableTests(unittest.TestCase):
     def test_every_visible_column_has_a_sort_rule(self):
         self.assertEqual(
-            ("move", "location", "artist", "song", "favorite", "name", "size"),
+            ("move", "removal", "location", "artist", "song", "favorite", "name", "size"),
             SORTABLE_COLUMNS,
         )
 
@@ -40,6 +41,13 @@ class SongTableTests(unittest.TestCase):
         reviewed = song_sort_key("move", "", checked=False, location="Do Not Want")
         self.assertLess(unchecked, checked)
         self.assertLess(checked, reviewed)
+
+    def test_removal_status_explains_manual_checks_and_saved_work(self):
+        self.assertEqual("", removal_row_status(checked=False, queued=False, f10_marked=False))
+        self.assertEqual(
+            "Queued after close; F10 mark saved; Checked for removal",
+            removal_row_status(checked=True, queued=True, f10_marked=True),
+        )
 
     def test_right_click_keeps_multiselection_only_inside_selected_group(self):
         self.assertEqual(("a", "b"), context_selection("b", ("a", "b")))

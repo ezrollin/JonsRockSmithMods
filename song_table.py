@@ -5,7 +5,20 @@ from __future__ import annotations
 from typing import Iterable
 
 
-SORTABLE_COLUMNS = ("move", "location", "artist", "song", "favorite", "name", "size")
+SORTABLE_COLUMNS = ("move", "removal", "location", "artist", "song", "favorite", "name", "size")
+
+
+def removal_row_status(*, checked: bool, queued: bool, f10_marked: bool) -> str:
+    """Describe reversible removal intent directly in the visible archive row."""
+
+    states = []
+    if queued:
+        states.append("Queued after close")
+    if f10_marked:
+        states.append("F10 mark saved")
+    if checked:
+        states.append("Checked for removal")
+    return "; ".join(states)
 
 
 def next_sort_state(

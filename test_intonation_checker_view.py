@@ -263,18 +263,74 @@ class TunerViewTests(unittest.TestCase):
     def test_reference_table_shows_all_six_open_and_octave_frequencies_for_selected_tuning(self):
         checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
         checker.reference_table = Mock()
-        checker.reference_table.get_children.return_value = []
+        checker.reference_table.get_children.side_effect = [(), tuple(f"string-{n}" for n in range(6, 0, -1))]
+        checker.reference_table.selection.return_value = ()
+        checker.flow = ManualIntonationSession()
+        checker.flow.select(3, "open")
         checker._tuning_name = Mock(return_value="E Standard")
         checker._refresh_reference_table()
         rows = [call.kwargs["values"][1:] for call in checker.reference_table.insert.call_args_list]
         self.assertEqual(6, len(rows))
         self.assertEqual(("E2", "82.41", "164.81"), rows[0])
         self.assertEqual(("A2", "110.00", "220.00"), rows[1])
+        self.assertEqual("string-3", checker.reference_table.selection_set.call_args.args[0])
         checker.reference_table.insert.reset_mock()
-        checker.reference_table.get_children.return_value = []
+        checker.reference_table.get_children.side_effect = [
+            tuple(f"string-{n}" for n in range(6, 0, -1)),
+            tuple(f"string-{n}" for n in range(6, 0, -1)),
+        ]
         checker._tuning_name.return_value = "Drop D"
         checker._refresh_reference_table()
         self.assertEqual("D2", checker.reference_table.insert.call_args_list[0].kwargs["values"][1])
+
+    def test_clicking_reference_row_selects_the_same_live_string(self):
+        checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
+        checker.reference_table = Mock()
+        checker.reference_table.selection.return_value = ("string-3",)
+        checker.string_var = Variable("String 4")
+        checker._selection_changed = Mock()
+        checker._reference_row_selected()
+        self.assertEqual("String 3", checker.string_var.get())
+        checker._selection_changed.assert_called_once()
+
+    def test_fret12_live_target_uses_nominal_chart_frequency_and_shows_both_values(self):
+        checker = self.make_checker(string_number=3, stage="fret12")
+        checker.flow.measurements[3]["open"] = frequency_for_note("G3") * 2 ** (4 / 1200)
+        self.assertAlmostEqual(frequency_for_note("G3") * 2, checker._display_target())
+        checker.instruction_var = Variable()
+        checker._update_instruction()
+        self.assertIn("target 392.00 Hz", checker.instruction_var.get())
+
+    def test_close_keeps_window_until_audio_thread_releases(self):
+        checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
+        checker.closed = False
+        checker.closing = False
+        checker.poll_id = None
+        checker.discovery_id = None
+        checker.startup_id = None
+        checker._close_wait_id = None
+        checker._close_wait_started = None
+        checker._close_callbacks = []
+        checker.capture = Mock()
+        checker.capture.is_alive = True
+        checker.window = Mock()
+        checker.window.winfo_exists.return_value = True
+        scheduled = []
+        checker.window.after.side_effect = lambda delay, callback: scheduled.append((delay, callback)) or "wait-id"
+        checker.input_status_var = Variable()
+        finished = Mock()
+
+        self.assertFalse(checker.close_and_then(finished))
+        checker.capture.stop.assert_called_once()
+        checker.window.destroy.assert_not_called()
+        finished.assert_not_called()
+        self.assertEqual(1, len(scheduled))
+
+        checker.capture.is_alive = False
+        scheduled[0][1]()
+        self.assertTrue(checker.closed)
+        checker.window.destroy.assert_called_once()
+        finished.assert_called_once()
 
     def test_live_meter_draws_red_amber_green_distance_bands_and_pitch_marker(self):
         checker = IntonationCheckerWindow.__new__(IntonationCheckerWindow)
@@ -304,6 +360,13 @@ class TunerViewTests(unittest.TestCase):
         checker._pending_input_label = ''
         checker.current_live_message = "PLAY A NOTE"
         checker.display_target_hz = None
+        checker.reference_table = None
+        checker.capture = None
+        checker.closed = False
+        checker.closing = False
+        checker._close_wait_id = None
+        checker._close_wait_started = None
+        checker._close_callbacks = []
         return checker
 
     def observe(self, checker, frequency, timestamp):
@@ -313,9 +376,17 @@ class TunerViewTests(unittest.TestCase):
 
     def prepare_lifecycle(self, checker):
         checker.closed = False
+        checker.closing = False
         checker.paused = False
         checker.poll_id = None
+        checker.discovery_id = None
+        checker.startup_id = None
+        checker._close_wait_id = None
+        checker._close_wait_started = None
+        checker._close_callbacks = []
         checker.window = Mock()
+        checker.reference_table = None
+        checker.capture = None
         checker.input_status_var = Variable('')
         checker.live_detail_var = Variable('OLD saddle adjustment')
         checker.instruction_var = Variable('')
@@ -334,7 +405,7 @@ class TunerViewTests(unittest.TestCase):
         self.assertEqual(reading["string"], STRING_LABELS[0])
         self.assertEqual(reading["stage"], "open")
 
-    def test_fretted_target_uses_captured_open_octave(self):
+    def test_fretted_target_uses_nominal_chart_octave_not_captured_open(self):
         checker = self.make_checker(tuning="Eb Standard", stage="fret12")
         open_target = frequency_for_note("Eb2")
         measured_open = open_target * 2 ** (-30.0 / 1200.0)
@@ -342,8 +413,8 @@ class TunerViewTests(unittest.TestCase):
         for timestamp in (1.0, 1.1, 1.2):
             self.observe(checker, measured_open * 2 * 2 ** (8.0 / 1200.0), timestamp)
         reading = IntonationCheckerWindow._live_comparison(checker)
-        self.assertAlmostEqual(reading["cents"], 8.0, places=6)
-        self.assertAlmostEqual(reading["target"], measured_open * 2.0)
+        self.assertAlmostEqual(reading["cents"], -22.0, places=6)
+        self.assertAlmostEqual(reading["target"], open_target * 2.0)
 
     def test_waiting_and_unstable_readings_have_no_adjustment_or_green(self):
         checker = self.make_checker()

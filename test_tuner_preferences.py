@@ -74,17 +74,22 @@ class TunerPreferenceTests(unittest.TestCase):
             save_tuner_settings(settings,path)
             actual=load_tuner_settings(path)
             self.assertEqual(actual['device_name'],self.cable.name)
-            self.assertEqual(actual['reference_offsets']['E Standard']['6'],-20)
-            self.assertEqual(actual['reference_offsets']['E Standard']['5'],-18.5)
+            self.assertEqual(actual['version'],2)
+            self.assertNotIn('reference_offsets',actual)
+            self.assertNotIn('reference_offsets',json.loads(path.read_text(encoding='utf-8')))
             self.assertEqual(list(path.parent.glob('.tuner-*')),[])
-    def test_bad_offsets_are_rejected_without_overwriting_saved_preferences(self):
+
+    def test_legacy_personal_offsets_are_ignored_when_loading_v1_preferences(self):
         with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)/'tuner_settings.json';save_tuner_settings(default_settings(),path)
-            before=path.read_bytes()
-            for value in (float('nan'),float('inf'),101,-101,True,'-20'):
-                settings=default_settings();settings['reference_offsets']={'E Standard':{'6':value}}
-                with self.assertRaises(ValueError):save_tuner_settings(settings,path)
-                self.assertEqual(path.read_bytes(),before)
+            path=Path(folder)/'tuner_settings.json'
+            path.write_text(json.dumps({
+                'version':1,'device_name':self.cable.name,'device_hostapi':'MME',
+                'tuning':'E Standard','reference_offsets':{'E Standard':{'6':-20}},
+            }),encoding='utf-8')
+            loaded=load_tuner_settings(path)
+            self.assertEqual(loaded['device_name'],self.cable.name)
+            self.assertEqual(loaded['tuning'],'E Standard')
+            self.assertNotIn('reference_offsets',loaded)
     def test_bad_or_oversized_settings_are_visible_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)/'tuner_settings.json';path.write_text('{bad')

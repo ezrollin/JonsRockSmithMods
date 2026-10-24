@@ -122,5 +122,8 @@ class LayoutTests(unittest.TestCase):
         app.tree.yview.return_value = (0.0, 1.0)
         app._apply_tree_sort = mock.Mock()
         app._render()
-        self.assertEqual(app.checked_count_var.get(), "0 songs checked")
+        self.assertEqual(
+            app.checked_count_var.get(),
+            "0 archives checked for removal; 0 queued after close; 0 saved F10 mark(s)",
+        )
         self.assertEqual(app.pages.add.call_count, 3)

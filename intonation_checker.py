@@ -57,13 +57,15 @@ class IntonationCheckerWindow:
         self.tuning_var = tk.StringVar(value=next((label for label, name in TUNING_LABEL_TO_NAME.items() if name == preset)))
         self.string_var = tk.StringVar(value=STRING_LABELS[0])
         self.stage_var = tk.StringVar(value='open')
-        self.offset_var = tk.StringVar(value='0')
         self.input_status_var = tk.StringVar(value='Finding guitar cable; audio stays in memory and is never recorded.')
         self.instruction_var = tk.StringVar(value='')
         self.live_detail_var = tk.StringVar(value='Choose the string and OPEN or FRET 12. The app never switches them automatically.')
         self.preference_status_var = tk.StringVar(value=self.settings_error)
         self.reference_table = None
-        self._load_reference_offsets()
+        self._close_wait_id = None
+        self._close_wait_started = None
+        self._close_callbacks = []
+        self.closing = False
         self._build()
         self._update_instruction()
         self.startup_id = self.window.after(100, self.refresh_devices)
@@ -78,7 +80,7 @@ class IntonationCheckerWindow:
         self.scroll_page.grid(row=0, column=0, sticky='nsew')
         root = self.scroll_page.content
         root.columnconfigure(0, weight=1)
-        ttk.Label(root, text='Choose string and stage. OPEN tunes the string; FRET 12 checks intonation against its captured open octave.', wraplength=780, font=('Segoe UI', 11, 'bold')).grid(row=0, column=0, sticky='ew', pady=(0, 10))
+        ttk.Label(root, text='Choose a string and stage. OPEN and FRET 12 use the selected tuning chart’s standard A440 frequencies.', wraplength=780, font=('Segoe UI', 11, 'bold')).grid(row=0, column=0, sticky='ew', pady=(0, 10))
         setup = ttk.LabelFrame(root, text='Input and selected string', padding=10)
         setup.grid(row=1, column=0, sticky='ew')
         setup.columnconfigure(1, weight=1)
@@ -107,6 +109,7 @@ class IntonationCheckerWindow:
             chart, columns=('string', 'open', 'open_hz', 'fret12_hz'),
             show='headings', height=6
         )
+        self.reference_table.bind('<<TreeviewSelect>>', self._reference_row_selected, add=True)
         for key, title, width in (
             ('string', 'String', 130), ('open', 'Open note', 110),
             ('open_hz', 'Open (Hz)', 130), ('fret12_hz', '12th fret (Hz)', 150),
@@ -115,22 +118,15 @@ class IntonationCheckerWindow:
             self.reference_table.column(key, width=width, anchor='center', stretch=True)
         self.reference_table.grid(row=0, column=0, sticky='ew')
         self._refresh_reference_table()
-        ttk.Label(chart, text='12th fret is twice open-string frequency. Personal open-pitch offsets may change the live target.',
+        ttk.Label(chart, text='OPEN and FRET 12 live targets match these A440 chart values. Tune OPEN first; FRET 12 must be within 5 cents of its listed target.',
                   wraplength=760).grid(row=1, column=0, sticky='w', pady=(4, 0))
-        reference = ttk.LabelFrame(root, text='Personal open-pitch reference', padding=10)
-        reference.grid(row=3, column=0, sticky='ew', pady=8)
-        reference.columnconfigure(0, weight=1)
-        ttk.Label(reference, text='Default 0 cents = A440 tuning. Negative is lower. For a game-accepted open pitch 20 cents lower, set -20 for this string. This is a preference, not verified game calibration.', wraplength=760).grid(row=0, column=0, columnspan=3, sticky='ew')
-        ttk.Spinbox(reference, from_=-100, to=100, increment=1, textvariable=self.offset_var, width=7).grid(row=1, column=0, sticky='w', pady=6)
-        ttk.Button(reference, text='Apply reference cents', command=self._apply_reference).grid(row=1, column=1, sticky='w', padx=6)
-        ttk.Button(reference, text='Use this stable open pitch', command=self._use_open_reference).grid(row=2, column=0, columnspan=2, sticky='w')
         live = ttk.LabelFrame(root, text='Live reading - selected stage stays fixed', padding=10)
-        live.grid(row=4, column=0, sticky='ew')
+        live.grid(row=3, column=0, sticky='ew')
         self.tuner_canvas = tk.Canvas(live, height=285, background='#101923', highlightthickness=0, borderwidth=0)
         self.tuner_canvas.pack(fill='x', expand=True)
         self.tuner_canvas.bind('<Configure>', self._draw_tuner)
         ttk.Label(live, textvariable=self.live_detail_var, wraplength=760).pack(anchor='w', pady=6)
-        for row, variable in ((5, self.instruction_var), (6, self.input_status_var), (7, self.preference_status_var)):
+        for row, variable in ((4, self.instruction_var), (5, self.input_status_var), (6, self.preference_status_var)):
             ttk.Label(root, textvariable=variable, wraplength=760, padding=(0, 4)).grid(row=row, column=0, sticky='ew')
         self.footer_frame = ttk.Frame(host, padding=(12, 7))
         self.footer_frame.grid(row=1, column=0, sticky='ew')
@@ -157,28 +153,47 @@ class IntonationCheckerWindow:
         for item in self.reference_table.get_children(''):
             self.reference_table.delete(item)
         for number, note, open_hz, fret12_hz in tuning_reference_rows(self._tuning_name()):
-            self.reference_table.insert('', 'end', values=(
+            item = f'string-{number}'
+            self.reference_table.insert('', 'end', iid=item, values=(
                 f'String {number}', note, f'{open_hz:.2f}', f'{fret12_hz:.2f}'
             ))
+        self._select_reference_row(getattr(getattr(self, 'flow', None), 'string_number', 6))
+
+    def _select_reference_row(self, number):
+        if self.reference_table is None:
+            return
+        item = f'string-{number}'
+        if item not in self.reference_table.get_children(''):
+            return
+        if self.reference_table.selection() != (item,):
+            self.reference_table.selection_set(item)
+        self.reference_table.focus(item)
+        self.reference_table.see(item)
+
+    def _reference_row_selected(self, _event=None):
+        if self.reference_table is None:
+            return
+        selection = self.reference_table.selection()
+        if not selection:
+            return
+        try:
+            number = int(selection[0].removeprefix('string-'))
+        except ValueError:
+            return
+        self.string_var.set(STRING_LABELS[6 - number])
+        self._selection_changed()
 
     def _save_settings(self):
         try:
             save_tuner_settings(self.settings)
-            self.preference_status_var.set('Cable identity and per-string references saved for this Windows user.')
+            self.preference_status_var.set('Cable identity and tuning selection saved for this Windows user.')
         except Exception as exc:
             logging.exception('Could not save tuner preferences')
             self.preference_status_var.set(f'Preferences NOT saved: {exc}')
 
-    def _load_reference_offsets(self):
-        values = self.settings['reference_offsets'].get(self._tuning_name(), {})
-        for number in range(1, 7):
-            self.flow.set_reference_offset(number, values.get(str(number), 0.0))
-        self.offset_var.set(f'{self.flow.reference_offsets[self.flow.string_number]:g}')
-
     def _on_tuning_changed(self):
         self.flow.reset()
         self.settings['tuning'] = self._tuning_name()
-        self._load_reference_offsets()
         self._refresh_reference_table()
         self._save_settings()
         self._selection_changed()
@@ -186,7 +201,7 @@ class IntonationCheckerWindow:
     def _selection_changed(self):
         number = 6 - STRING_LABELS.index(self.string_var.get())
         self.flow.select(number, self.stage_var.get())
-        self.offset_var.set(f'{self.flow.reference_offsets[number]:g}')
+        self._select_reference_row(number)
         self._clear_live_reading('PLAY A NOTE: selected string/stage changed; wait for fresh stable readings.')
         self._retarget_input()
         self._update_instruction()
@@ -198,27 +213,6 @@ class IntonationCheckerWindow:
         self.current_live_message = message
         self.live_detail_var.set(message)
         self._draw_tuner()
-
-    def _apply_reference(self):
-        try:
-            value = float(self.offset_var.get())
-            number = self.flow.string_number
-            self.flow.set_reference_offset(number, value)
-        except (ValueError, TypeError) as exc:
-            messagebox.showwarning('Reference cents', str(exc), parent=self.window)
-            return
-        self.settings['reference_offsets'].setdefault(self._tuning_name(), {})[str(number)] = value
-        self._save_settings()
-        self._selection_changed()
-
-    def _use_open_reference(self):
-        update = self.last_update
-        if self.flow.stage != 'open' or update is None or update.status not in ('tune_open', 'open_tuned') or (update.measured_frequency_hz is None) or (self.current_pitch is None) or (time.monotonic() - self.current_pitch.timestamp > 0.45):
-            messagebox.showinfo('Open reference', 'Choose OPEN, pluck this string and wait for a stable reading first.', parent=self.window)
-            return
-        _, nominal = self._tuning_target(self.flow.string_number)
-        self.offset_var.set(f'{cents_difference(update.measured_frequency_hz, nominal):.2f}')
-        self._apply_reference()
 
     def _display_target(self):
         return self.flow.target_frequency(self._tuning_target(self.flow.string_number)[1])
@@ -360,14 +354,13 @@ class IntonationCheckerWindow:
     def _update_instruction(self):
         number, stage = self.flow.current_step
         note, nominal = self._tuning_target(number)
-        offset = self.flow.reference_offsets[number]
         if stage == 'open':
             captured = self.flow.measurements[number].get('open')
-            state = f'Captured {captured:.2f} Hz. Choose FRET 12 when ready.' if captured else 'Pluck open and settle within +/-5 cents to capture the reference.'
-            text = f'SELECTED: String {number} OPEN - {note}, personal offset {offset:+g} cents. {state} Stage never changes automatically.'
+            state = f'Captured {captured:.2f} Hz; choose FRET 12 when ready.' if captured else 'Pluck open and settle within +/-5 cents to confirm tuning.'
+            text = f'SELECTED: String {number} OPEN - {note}, target {nominal:.2f} Hz. {state} Stage never changes automatically.'
         else:
             target = self._display_target()
-            text = f'SELECTED: String {number} FRET 12 - press at fret 12 with normal playing pressure. Target {target:.2f} Hz = twice captured open. If sharp, lengthen the saddle speaking length; if flat, shorten it. Retune OPEN after adjustment and recheck.' if target else f"SELECTED: String {number} FRET 12. Capture this string's OPEN reference first; no intonation result until then."
+            text = f'SELECTED: String {number} FRET 12 - target {target:.2f} Hz from the A440 tuning chart. Press at fret 12 with normal playing pressure. If sharp, lengthen the saddle speaking length; if flat, shorten it. Retune OPEN after adjustment and recheck.' if target else f"SELECTED: String {number} FRET 12. Tune and confirm this string's OPEN pitch first."
         self.instruction_var.set(text)
 
     def _update_live_detail(self, update):
@@ -379,10 +372,10 @@ class IntonationCheckerWindow:
         cents = update.cents_from_target
         _, action = tuner_adjustment(cents, 5)
         if self.flow.stage == 'open':
-            self.live_detail_var.set(f'Open pitch: {cents:+.1f} cents from your chosen reference. {action}. ' + ('Reference captured; manually choose FRET 12.' if update.status == 'open_tuned' else 'Adjust the open-string tuning.'))
+            self.live_detail_var.set(f'Open pitch: {update.measured_frequency_hz:.2f} Hz vs {update.target_frequency_hz:.2f} Hz A440 target; {cents:+.1f} cents. {action}. ' + ('OPEN confirmed; manually choose FRET 12.' if update.status == 'open_tuned' else 'Adjust the open-string tuning.'))
         else:
-            guidance = 'Intonation matches the captured open octave.' if abs(cents) <= 5 else 'Lengthen saddle speaking length, then retune open.' if cents > 0 else 'Shorten saddle speaking length, then retune open.'
-            self.live_detail_var.set(f'12th-fret intonation error {cents:+.1f} cents. {guidance}')
+            guidance = '12th fret matches the A440 target.' if abs(cents) <= 5 else 'Lengthen the saddle speaking length, then retune open.' if cents > 0 else 'Shorten the saddle speaking length, then retune open.'
+            self.live_detail_var.set(f'12th fret: {update.measured_frequency_hz:.2f} Hz vs {update.target_frequency_hz:.2f} Hz target; {cents:+.1f} cents. {action}. {guidance}')
 
     def _live_comparison(self):
         number, stage = self.flow.current_step
@@ -423,7 +416,7 @@ class IntonationCheckerWindow:
         canvas.create_text(center, 60, text=note, fill=color, font=('Segoe UI', 28, 'bold'))
         canvas.create_text(center, 99, text=reading['state'], fill=color, font=('Segoe UI', 12, 'bold'))
         if reading['cents'] is not None:
-            canvas.create_text(center, 124, text=f"{reading['measured']:.2f} Hz | {reading['cents']:+.1f} cents (+ sharp / - flat)", fill='#f3f6fa', font=('Segoe UI', 10))
+            canvas.create_text(center, 124, text=f"{reading['measured']:.2f} Hz actual | {reading['target']:.2f} Hz target | {reading['cents']:+.1f} cents", fill='#f3f6fa', font=('Segoe UI', 10))
         arrow, action = tuner_adjustment(reading['cents'], 5)
         scale_left, scale_right = max(24, width * .12), min(width - 24, width * .88)
         scale_width = max(1, scale_right - scale_left)
@@ -448,9 +441,10 @@ class IntonationCheckerWindow:
             canvas.create_text(center, 271, text=f"Target {reading['target']:.2f} Hz  |  < lower     > higher", fill='#b7c6d7', font=('Segoe UI', 10))
 
     def close(self):
-        if self.closed:
+        if self.closed or self.closing:
             return
-        self.closed = True
+        self.closing = True
+        self._close_wait_started = time.monotonic()
         for token in (self.poll_id, self.discovery_id, getattr(self, "startup_id", None)):
             if token is not None:
                 try:
@@ -462,11 +456,59 @@ class IntonationCheckerWindow:
         if self.capture is not None:
             try:
                 self.capture.stop()
-                self.capture.join(timeout=1.5)
             except Exception:
                 logging.exception('Could not stop tuner capture on close')
+                self.closing = False
+                return
+            self.input_status_var.set('Closing tuner: waiting for the guitar input to release...')
+            self._wait_for_audio_release()
+            return
+        self._finish_close()
+
+    def close_and_then(self, callback):
+        if callback is not None:
+            if self.closed:
+                callback()
+                return True
+            self._close_callbacks.append(callback)
+        self.close()
+        return self.closed
+
+    def _wait_for_audio_release(self):
+        self._close_wait_id = None
+        if self.closed:
+            return
+        if self.capture is not None:
+            try:
+                self.capture.join(timeout=0)
+                still_running = self.capture.is_alive
+            except Exception:
+                logging.exception('Could not confirm tuner audio release')
+                still_running = True
+            if still_running:
+                elapsed = time.monotonic() - self._close_wait_started
+                self.input_status_var.set(
+                    'Closing tuner: waiting for the guitar input to release...'
+                    if elapsed < 10 else
+                    'Audio release is taking longer than expected. The tuner will stay open until the input thread stops.'
+                )
+                self._close_wait_id = self.window.after(100 if elapsed < 10 else 1000, self._wait_for_audio_release)
+                return
+        self._finish_close()
+
+    def _finish_close(self):
+        if self.closed:
+            return
+        self.closed = True
+        self.closing = False
         try:
             if self.window.winfo_exists():
                 self.window.destroy()
         except tk.TclError:
             pass
+        callbacks, self._close_callbacks = self._close_callbacks, []
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                logging.exception('Tuner close callback failed')
